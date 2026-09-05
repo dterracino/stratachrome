@@ -4,6 +4,7 @@ depth_mapper.py
 Transforms zone-separated lightness arrays into physical millimeter heights
 using two-tier stacking. Enforces the background ceiling as a solid pedestal
 beneath the foreground and provides smooth, anti-sheer boundary blending.
+Incorporates a dedicated first layer height (default 0.20mm) into base tier geometry.
 """
 
 from __future__ import annotations
@@ -22,13 +23,13 @@ class TierHeightBudget:
 
     Attributes:
         layer_count: Total discrete slicer layers allocated to this tier.
-        step_height_mm: Layer height for standard layers (e.g., 0.10mm).
-        first_layer_height_mm: Height for the bed-contact layer (e.g., 0.16mm).
+        step_height_mm: Layer height for standard layers (default: 0.10mm).
+        first_layer_height_mm: Height for the bed-contact layer (default: 0.20mm).
         floor_z_mm: Base elevation where this tier starts.
     """
     layer_count: int
     step_height_mm: float = 0.10
-    first_layer_height_mm: float = 0.16
+    first_layer_height_mm: float = 0.20
     floor_z_mm: float = 0.0
 
     def __post_init__(self) -> None:
@@ -187,7 +188,7 @@ class TwoTierDepthMapper:
         bg_states: list[LayerOpticalState],
         fg_states: list[LayerOpticalState],
         step_height_mm: float = 0.10,
-        first_layer_height_mm: float = 0.16,
+        first_layer_height_mm: float = 0.20,
     ) -> None:
         self._bg_mapper = bg_mapper
         self._fg_mapper = fg_mapper

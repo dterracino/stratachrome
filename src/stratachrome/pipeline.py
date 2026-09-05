@@ -58,6 +58,18 @@ def _parse_arguments() -> argparse.Namespace:
         help="Maximum raster dimension for mesh grid (default: 1000).",
     )
     parser.add_argument(
+        "--layer-height",
+        type=float,
+        default=0.10,
+        help="Standard layer step height in mm (default: 0.10).",
+    )
+    parser.add_argument(
+        "--first-layer",
+        type=float,
+        default=0.20,
+        help="First layer bed-contact height in mm (default: 0.20).",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -90,6 +102,7 @@ def main() -> int:
     height_mm = round(args.width * aspect_ratio, 2)
 
     print(f"   Image grid: {w_px}x{h_px} -> Print size: {args.width:.1f}mm x {height_mm:.1f}mm")
+    print(f"   Vertical resolution: First layer={args.first_layer:.2f}mm, Step={args.layer_height:.2f}mm")
 
     print("2. Extracting alpha matte via BiRefNet...")
     segmenter = ForegroundSegmenter(SegmentationConfig(device=args.device, feather_radius=2))
@@ -110,8 +123,8 @@ def main() -> int:
     bg_states = simulate_tier_stack(
         bg_filaments,
         total_layers=12,
-        step_height_mm=0.10,
-        first_layer_height_mm=0.16,
+        step_height_mm=args.layer_height,
+        first_layer_height_mm=args.first_layer,
     )
     bg_mapper = LightnessLayerMapper(bg_states)
 
@@ -125,8 +138,8 @@ def main() -> int:
     fg_states = simulate_tier_stack(
         fg_filaments,
         total_layers=12,
-        step_height_mm=0.10,
-        first_layer_height_mm=0.10,
+        step_height_mm=args.layer_height,
+        first_layer_height_mm=args.layer_height,
         initial_substrate_l=bg_states[-1].simulated_l,
     )
     fg_mapper = LightnessLayerMapper(fg_states)
@@ -137,8 +150,8 @@ def main() -> int:
         fg_mapper=fg_mapper,
         bg_states=bg_states,
         fg_states=fg_states,
-        step_height_mm=0.10,
-        first_layer_height_mm=0.16,
+        step_height_mm=args.layer_height,
+        first_layer_height_mm=args.first_layer,
     )
     height_result = depth_mapper.generate_heightmap(bg_l, fg_l, seg_result.matte)
     print(f"   Max height: {height_result.max_height_mm:.2f}mm ({height_result.total_layers} layers)")
