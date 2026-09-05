@@ -53,12 +53,14 @@ Input Image
 ## Installation
 
 ### 1. Clone the Repository
+
 ```bash
 git clone [https://github.com/dterracino/stratachrome.git](https://github.com/dterracino/stratachrome.git)
 cd stratachrome
 ```
 
 ### 2. Set Up Virtual Environment
+
 ```bash
 python -m venv .venv
 
@@ -73,12 +75,15 @@ source .venv/bin/activate
 ```
 
 ### 3. Install Dependencies
+
 If you have an NVIDIA GPU, install the CUDA-enabled PyTorch wheels first:
+
 ```bash
 pip install torch torchvision --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
 ```
 
 Install Stratachrome in editable mode:
+
 ```bash
 pip install --upgrade pip
 pip install -e ".[dev]"
@@ -89,19 +94,25 @@ pip install -e ".[dev]"
 ## Quickstart & Usage
 
 ### 1. End-to-End Generation (Full 3MF)
+
 Convert an image into a ready-to-print 3MF file with layer pause notifications:
+
 ```bash
 stratachrome -i assets/subject.png -o output/relief_project.3mf --width 150.0 --max-dim 1000
 ```
 
 ### 2. Segment and Inspect Alpha Layers
+
 Isolate foreground and background components and inspect edge-feathering previews:
+
 ```bash
 stratachrome-segment -i assets/subject.png -o output/segmentation/ --save-matte --feather 2
 ```
 
 ### 3. Mesh Verification Export (Binary STL)
+
 Generate a quick manifold binary STL heightmap to verify topology or test physical dimensions:
+
 ```bash
 stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl --width 100.0 --max-height 2.4 --base-height 0.4
 ```
@@ -113,7 +124,7 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl --width 100.0 --
 ### `stratachrome` (Main CLI)
 
 | Flag | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `-i, --input` | *Required* | Path to the source RGB image file (`.png`, `.jpg`, `.webp`). |
 | `-o, --output` | `output/project.3mf` | Destination path for the generated Bambu/Orca 3MF container. |
 | `--width` | `150.0` | Physical width of the printed model along the X axis in millimeters. |
@@ -125,7 +136,7 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl --width 100.0 --
 ### `stratachrome-segment`
 
 | Flag | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `-i, --input` | *Required* | Input image path. |
 | `-o, --output-dir` | `output` | Directory where segmented RGBA images are saved. |
 | `--feather` | `2` | Radius in pixels for Gaussian boundary edge softening. |
@@ -173,6 +184,7 @@ stratachrome/
 ## Development
 
 Run tests and style checks:
+
 ```bash
 # Run pytest test suite
 pytest
