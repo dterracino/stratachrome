@@ -29,7 +29,13 @@ def _parse_arguments() -> argparse.Namespace:
         default=Path("output/test_model.stl"),
         help="Output STL path (default: output/test_model.stl).",
     )
-    parser.add_argument("--width", type=float, default=100.0, help="Physical width in mm (default: 100.0).")
+    parser.add_argument(
+        "-s",
+        "--size",
+        type=float,
+        default=100.0,
+        help="Target physical size in mm for the maximum image dimension (default: 100.0).",
+    )
     parser.add_argument("--max-height", type=float, default=2.4, help="Maximum Z height in mm (default: 2.4).")
     parser.add_argument("--base-height", type=float, default=0.4, help="Solid base height in mm (default: 0.4).")
     parser.add_argument("--max-dimension", type=int, default=400, help="Max raster dimension (default: 400).")
@@ -45,7 +51,7 @@ def _load_normalized_lightness(path: Path, max_dim: int) -> np.ndarray:
         w, h = img.size
         if max(w, h) > max_dim:
             scale = max_dim / max(w, h)
-            img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+            img = img.resize((int(round(w * scale)), int(round(h * scale))), Image.Resampling.BILINEAR)
         arr = np.array(img, dtype=np.float32)
         return arr / 255.0
 
@@ -60,17 +66,21 @@ def main() -> int:
         return 1
 
     rows, cols = norm_l.shape
-    aspect = rows / cols
-    physical_height_mm = args.width * aspect
+    if cols >= rows:
+        width_mm = args.size
+        height_mm = round(args.size * (rows / cols), 2)
+    else:
+        height_mm = args.size
+        width_mm = round(args.size * (cols / rows), 2)
 
-    print(f"Loaded grid: {cols}x{rows} points -> {args.width:.1f}mm x {physical_height_mm:.1f}mm")
+    print(f"Loaded grid: {cols}x{rows} points -> {width_mm:.1f}mm x {height_mm:.1f}mm")
 
     z_span = args.max_height - args.base_height
     z_grid = args.base_height + norm_l * z_span
 
     dims = PhysicalDimensions(
-        width_mm=args.width,
-        height_mm=physical_height_mm,
+        width_mm=width_mm,
+        height_mm=height_mm,
         base_floor_z_mm=0.0,
     )
 

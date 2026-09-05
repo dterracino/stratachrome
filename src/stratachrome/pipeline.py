@@ -46,10 +46,11 @@ def _parse_arguments() -> argparse.Namespace:
         help="Output 3MF path (default: output/project.3mf).",
     )
     parser.add_argument(
-        "--width",
+        "-s",
+        "--size",
         type=float,
         default=150.0,
-        help="Physical print width in mm (default: 150.0).",
+        help="Target physical size in mm for the maximum image dimension (default: 150.0).",
     )
     parser.add_argument(
         "--max-dim",
@@ -98,10 +99,16 @@ def main() -> int:
     print(f"1. Loading image '{args.input.name}' (constrained to max {args.max_dim}px)...")
     source_image = _load_and_rescale_image(args.input, args.max_dim)
     w_px, h_px = source_image.size
-    aspect_ratio = h_px / w_px
-    height_mm = round(args.width * aspect_ratio, 2)
 
-    print(f"   Image grid: {w_px}x{h_px} -> Print size: {args.width:.1f}mm x {height_mm:.1f}mm")
+    # Fit maximum dimension to args.size while preserving aspect ratio
+    if w_px >= h_px:
+        width_mm = args.size
+        height_mm = round(args.size * (h_px / w_px), 2)
+    else:
+        height_mm = args.size
+        width_mm = round(args.size * (w_px / h_px), 2)
+
+    print(f"   Image grid: {w_px}x{h_px} -> Print size: {width_mm:.1f}mm x {height_mm:.1f}mm")
     print(f"   Vertical resolution: First layer={args.first_layer:.2f}mm, Step={args.layer_height:.2f}mm")
 
     print("2. Extracting alpha matte via BiRefNet...")
@@ -157,7 +164,7 @@ def main() -> int:
     print(f"   Max height: {height_result.max_height_mm:.2f}mm ({height_result.total_layers} layers)")
 
     print("6. Building watertight manifold triangle mesh...")
-    dimensions = PhysicalDimensions(width_mm=args.width, height_mm=height_mm, base_floor_z_mm=0.0)
+    dimensions = PhysicalDimensions(width_mm=width_mm, height_mm=height_mm, base_floor_z_mm=0.0)
     mesh_builder = WatertightMeshBuilder(dimensions)
     mesh = mesh_builder.build_mesh(height_result.z_grid)
     print(f"   Vertices: {mesh.vertex_count:,} | Triangles: {mesh.face_count:,}")
