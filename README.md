@@ -16,10 +16,11 @@ By coupling **BiRefNet bilateral background segmentation** with **Beer-Lambert t
 * **Predictive Optical Modeling**: Uses the Beer-Lambert law ($I = I_0 e^{-\alpha z}$) to accurately model the transmission distance ($TD$) and perceptual lightness ($L^*$) of real-world 3D printing filaments.
 * **Perceptual Color Precision**: Direct integration with `color-match-tools` (`color_tools.conversions`) for accurate CIELCh and CIELAB color-space mapping.
 * **Calibrated Layer Alignment**: Built with a dedicated 0.20 mm first-layer base for reliable bed adhesion and 0.10 mm layer increments matching standard slicer toolpaths.
+* **Flexible Swap Modes**: Supports automated multi-material hardware changers (`--swap-mode ams`) or single-extruder pause triggers (`--swap-mode manual`).
 * **Auto-Scaling Aspect Ratios**: Specify target maximum dimension in millimeters (`--size`); landscape and portrait images automatically scale to fit within your build plate envelope.
 * **Slicer-Optimized Grid Resolution**: Built around standard 0.42 mm nozzle line widths and Arachne dynamic extrusion parameters, sampling up to 1000 px resolution for Nyquist fidelity without slicing lag or mesh bloat.
 * **Watertight Manifold Meshes**: Generates counter-clockwise (CCW) wound top surfaces, flat baseplates, and perimeter skirts with zero degenerate triangles or non-manifold edges.
-* **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives featuring decomposed model components (`3D/Objects/object_1.model`) and automatic layer pause markers (`Metadata/custom_gcode_per_layer.xml`).
+* **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives featuring decomposed model components (`3D/Objects/object_1.model`) and optional layer pause markers (`Metadata/custom_gcode_per_layer.xml`).
 
 ---
 
@@ -46,7 +47,7 @@ Input Image
 [Watertight Mesh Builder] ─► 2-Manifold Triangular Mesh
          │
          ▼
-[OPC 3MF Exporter] ────────► Bambu Studio / Orca Slicer .3mf Container
+[OPC 3MF Exporter] ────────► Bambu Studio / Orca Slicer .3mf Container (AMS / Manual)
 ```
 
 ---
@@ -96,10 +97,16 @@ pip install -e ".[dev]"
 
 ### 1. End-to-End Generation (Full 3MF)
 
-Convert an image into a ready-to-print 3MF file with layer pause notifications (max dimension 150 mm):
+Convert an image into a ready-to-print 3MF file using an AMS multi-material printer (max dimension 150 mm):
 
 ```bash
-stratachrome -i assets/subject.png -o output/relief_project.3mf -s 150.0 --max-dim 1000
+stratachrome -i assets/subject.png -o output/relief_project.3mf -s 150.0 --swap-mode ams
+```
+
+For single-extruder printers requiring manual layer pause prompts:
+
+```bash
+stratachrome -i assets/subject.png -o output/relief_project.3mf -s 150.0 --swap-mode manual
 ```
 
 ### 2. Segment and Inspect Alpha Layers
@@ -132,6 +139,7 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--max-dim` | `1000` | Maximum pixel edge used to rasterize the mesh height grid. |
 | `--first-layer` | `0.20` | First layer bed-contact height in millimeters. |
 | `--layer-height` | `0.10` | Standard vertical layer step height in millimeters. |
+| `--swap-mode` | `ams` | Filament change mode: `ams` for multi-material auto-switching, `manual` for single-extruder pause triggers. |
 | `--device` | `auto` | Compute device for transformer inference (`cuda` or `cpu`). |
 
 ### `stratachrome-segment`
@@ -165,8 +173,8 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
    * **Layer Height**: Set to `0.10 mm` (matches `--layer-height`).
    * **Infill**: `100% Rectilinear`.
    * **Walls/Perimeters**: `1` or `2` (Arachne wall generator recommended).
-3. **Verify Pause Points**: Slice the plate. The layer-swap schedule automatically highlights the layer pauses defined in the 3MF metadata.
-4. **Print**: Start the print with the first background filament loaded. When the printer pauses, swap in the next filament specified in your console output summary.
+3. **Verify Pauses (Manual Mode Only)**: If you used `--swap-mode manual`, slice the plate and verify the layer pause markers generated from the script's terminal summary. If using `--swap-mode ams`, assign your filaments directly to the AMS slots in the slicer.
+4. **Print**: Start the print with the base background filament loaded.
 
 ---
 

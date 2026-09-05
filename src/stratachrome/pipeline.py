@@ -71,6 +71,13 @@ def _parse_arguments() -> argparse.Namespace:
         help="First layer bed-contact height in mm (default: 0.20).",
     )
     parser.add_argument(
+        "--swap-mode",
+        type=str,
+        choices=["ams", "manual"],
+        default="ams",
+        help="Filament change mode: 'ams' for multi-material auto-switching, 'manual' for single-extruder pause triggers (default: ams).",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -100,7 +107,6 @@ def main() -> int:
     source_image = _load_and_rescale_image(args.input, args.max_dim)
     w_px, h_px = source_image.size
 
-    # Fit maximum dimension to args.size while preserving aspect ratio
     if w_px >= h_px:
         width_mm = args.size
         height_mm = round(args.size * (h_px / w_px), 2)
@@ -110,6 +116,7 @@ def main() -> int:
 
     print(f"   Image grid: {w_px}x{h_px} -> Print size: {width_mm:.1f}mm x {height_mm:.1f}mm")
     print(f"   Vertical resolution: First layer={args.first_layer:.2f}mm, Step={args.layer_height:.2f}mm")
+    print(f"   Swap mode: {args.swap_mode.upper()}")
 
     print("2. Extracting alpha matte via BiRefNet...")
     segmenter = ForegroundSegmenter(SegmentationConfig(device=args.device, feather_radius=2))
@@ -120,7 +127,6 @@ def main() -> int:
     bg_l, fg_l = partition_lightness_channels(full_l, seg_result.matte)
 
     print("4. Calibrating filament optical models via color_tools...")
-    # Background Tier Stack: Dark to bright
     bg_raw = [
         create_filament("Bambu Charcoal", "#1F1F1F", td=0.6),
         create_filament("Bambu Ash Gray", "#757575", td=2.0),
@@ -135,7 +141,6 @@ def main() -> int:
     )
     bg_mapper = LightnessLayerMapper(bg_states)
 
-    # Foreground Tier Stack: Sits directly on the background ceiling plateau
     fg_raw = [
         create_filament("Bambu Dark Blue", "#0B2545", td=0.8),
         create_filament("Bambu Crimson", "#8B0000", td=1.8),
@@ -170,12 +175,15 @@ def main() -> int:
     print(f"   Vertices: {mesh.vertex_count:,} | Triangles: {mesh.face_count:,}")
 
     print(f"7. Packaging Bambu Studio / Orca Slicer 3MF into '{args.output}'...")
-    export_bambu_3mf(mesh, height_result.swap_schedule, args.output)
+    export_bambu_3mf(mesh, height_result.swap_schedule, args.output, swap_mode=args.swap_mode)
 
     print("\n✓ Stratachrome export complete!")
-    print("Embedded layer pause schedule:")
-    for swap in height_result.swap_schedule:
-        print(f"  - Layer {swap.global_layer_idx:2d} @ {swap.z_height_mm:5.2f}mm -> {swap.filament_name} ({swap.tier_name})")
+    if args.swap_mode == "manual":
+        print("Embedded layer pause schedule (Manual Mode):")
+        for swap in height_result.swap_schedule:
+            print(f"  - Layer {swap.global_layer_idx:2d} @ {swap.z_height_mm:5.2f}mm -> {swap.filament_name} ({swap.tier_name})")
+    else:
+        print("Configured for AMS multi-material execution (no manual pauses required).")
 
     return 0
 
