@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 
 from PIL import Image
+from color_tools import FilamentRecord
 
 from stratachrome.color_engine import (
     extract_perceptual_lab,
@@ -110,6 +111,20 @@ def _load_and_rescale_image(path: Path, max_dim: int) -> Image.Image:
         return image
 
 
+def _filament_display_name(filament: FilamentRecord) -> str:
+    """Return the full catalog identity used in schedule output."""
+    return " ".join(
+        part.strip()
+        for part in (
+            filament.maker,
+            filament.type,
+            filament.finish,
+            filament.color,
+        )
+        if part and part.strip()
+    )
+
+
 def _print_tier_schedule(tier_name: str, schedule: OptimizedTierSchedule) -> None:
     print(
         f"   {tier_name}: {len(schedule.assignments)} colors, "
@@ -119,7 +134,7 @@ def _print_tier_schedule(tier_name: str, schedule: OptimizedTierSchedule) -> Non
         filament = assignment.filament
         print(
             f"     L{assignment.start_layer:03d} +{layer_count:3d}  "
-            f"{filament.maker} {filament.color} "
+            f"{_filament_display_name(filament)} "
             f"({filament.hex}, TD={filament.td_value:g})"
         )
 
@@ -208,7 +223,7 @@ def main() -> int:
     print(f"8. Packaging Bambu Studio / Orca Slicer 3MF into '{args.output}'...")
     export_bambu_3mf(mesh, height_result.swap_schedule, args.output, swap_mode=args.swap_mode)
 
-    print("\n✓ Stratachrome export complete!")
+    print("\nStratachrome export complete!")
     if args.swap_mode == "manual":
         print("Embedded layer pause schedule (Manual Mode):")
         for swap in height_result.swap_schedule:

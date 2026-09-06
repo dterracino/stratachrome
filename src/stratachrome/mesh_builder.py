@@ -113,8 +113,8 @@ class WatertightMeshBuilder:
                 i3 = (r + 1) * cols + (c + 1)
 
                 # Two triangles per grid cell
-                faces_list.append([i0, i2, i1])
-                faces_list.append([i1, i2, i3])
+                faces_list.append([i0, i1, i2])
+                faces_list.append([i1, i3, i2])
 
         # 3. Build bottom floor triangles (Inverted winding for downward-facing normals)
         for r in range(rows - 1):
@@ -124,8 +124,8 @@ class WatertightMeshBuilder:
                 f2 = num_top_verts + ((r + 1) * cols + c)
                 f3 = num_top_verts + ((r + 1) * cols + (c + 1))
 
-                faces_list.append([f0, f1, f2])
-                faces_list.append([f1, f3, f2])
+                faces_list.append([f0, f2, f1])
+                faces_list.append([f1, f2, f3])
 
         # 4. Build perimeter skirt connecting top surface edges to bottom floor
         # Top/Bottom edges (along columns)

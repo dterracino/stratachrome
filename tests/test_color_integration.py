@@ -22,6 +22,7 @@ from stratachrome.optical_model import (
     simulate_tier_stack,
 )
 from stratachrome.depth_mapper import TwoTierDepthMapper
+from stratachrome.pipeline import _filament_display_name
 
 
 class ColorToolsIntegrationTests(unittest.TestCase):
@@ -37,6 +38,14 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         self.assertEqual({record.finish for record in self.collection}, {"Basic", "Matte"})
         self.assertTrue(
             all(record.td_value is not None and record.td_value > 0 for record in self.collection)
+        )
+
+    def test_schedule_display_name_includes_type_and_finish(self) -> None:
+        sky_blue = self._filament("Sky Blue")
+
+        self.assertEqual(
+            _filament_display_name(sky_blue),
+            "Bambu Lab PLA Matte Sky Blue",
         )
 
     def test_tier_masks_are_complementary(self) -> None:
