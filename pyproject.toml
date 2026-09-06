@@ -64,6 +64,9 @@ stratachrome-mesh = "stratachrome.stl_test_cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+stratachrome = ["resources/*.json"]
+
 [tool.black]
 line-length = 100
 target-version = ["py310"]

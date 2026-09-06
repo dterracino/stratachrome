@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from importlib.resources import files
 import json
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 import xml.etree.ElementTree as ET
-import zipfile
 
 from stratachrome.depth_mapper import SwapEvent
 from stratachrome.mesh_builder import TriangleMesh
@@ -179,22 +178,6 @@ def ordered_filaments(swap_schedule: Sequence[SwapEvent]) -> list[tuple[str, str
     return ordered
 
 
-def _default_project_settings() -> dict[str, Any]:
-    return {
-        "version": BAMBU_VERSION,
-        "printer_model": "Bambu Lab X1 Carbon",
-        "printer_variant": "0.4",
-        "printer_settings_id": "Bambu Lab X1 Carbon 0.4 nozzle",
-        "print_settings_id": "Hueforge 2026",
-        "printer_technology": "FFF",
-        "nozzle_diameter": ["0.4"],
-        "printable_area": ["0x0", "256x0", "256x256", "0x256"],
-        "single_extruder_multi_material": "1",
-        "enable_prime_tower": "1",
-        "curr_bed_type": "Textured PEI Plate",
-    }
-
-
 def plate_center_from_settings(settings: Mapping[str, Any]) -> tuple[float, float]:
     """Return the center of the configured printable polygon."""
     raw_area = settings.get("printable_area")
@@ -215,24 +198,19 @@ def plate_center_from_settings(settings: Mapping[str, Any]) -> tuple[float, floa
     return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
 
 
-def load_project_settings(template_3mf: Path | None) -> dict[str, Any]:
-    if template_3mf is None:
-        return _default_project_settings()
-    if not template_3mf.is_file():
-        raise FileNotFoundError(f"Bambu template 3MF not found: {template_3mf}")
-    with zipfile.ZipFile(template_3mf) as archive:
-        try:
-            raw_config = archive.read("Metadata/project_settings.config")
-        except KeyError as error:
-            raise ValueError(
-                f"Bambu template has no Metadata/project_settings.config: {template_3mf}"
-            ) from error
+def load_project_settings() -> dict[str, Any]:
+    """Load Stratachrome's packaged X1 Carbon 0.4 mm project defaults."""
+    resource = (
+        files("stratachrome")
+        .joinpath("resources")
+        .joinpath("bambu_x1c_0.4_project_settings.json")
+    )
     try:
-        loaded = json.loads(raw_config)
+        loaded = json.loads(resource.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
-        raise ValueError(f"Bambu template project settings are not valid JSON: {template_3mf}") from error
+        raise RuntimeError("Packaged Bambu project settings are not valid JSON.") from error
     if not isinstance(loaded, dict):
-        raise ValueError("Bambu template project settings must be a JSON object.")
+        raise RuntimeError("Packaged Bambu project settings must be a JSON object.")
     return loaded
 
 
@@ -247,9 +225,8 @@ def build_project_settings_config(
     *,
     step_height_mm: float,
     first_layer_height_mm: float,
-    template_3mf: Path | None,
 ) -> str:
-    settings = deepcopy(load_project_settings(template_3mf))
+    settings = deepcopy(load_project_settings())
     filaments = ordered_filaments(swap_schedule)
     filament_count = len(filaments)
     source_count = len(settings.get("filament_colour", []))

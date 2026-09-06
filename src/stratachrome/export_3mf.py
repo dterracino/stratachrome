@@ -191,16 +191,18 @@ def export_bambu_3mf(
     swap_schedule: list[SwapEvent],
     output_path: Path,
     swap_mode: str = "ams",
+    *,
+    step_height_mm: float = 0.10,
+    first_layer_height_mm: float = 0.20,
 ) -> None:
-    """Exports a TriangleMesh and swap schedule into a Bambu/Orca compatible 3MF."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    """Compatibility wrapper around the native Bambu project writer."""
+    from stratachrome.bambu_exporter import export_bambu_project
 
-    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("[Content_Types].xml", _build_content_types_xml())
-        zf.writestr("_rels/.rels", _build_root_rels_xml())
-        zf.writestr("3D/3dmodel.model", _build_master_assembly_xml())
-        zf.writestr("3D/_rels/3dmodel.model.rels", _build_model_rels_xml())
-        zf.writestr("3D/Objects/object_1.model", _build_object_geometry_xml(mesh))
-        zf.writestr("Metadata/project_settings.config", _build_project_settings_config(swap_schedule, swap_mode))
-        zf.writestr("Metadata/custom_gcode_per_layer.xml", _build_custom_gcode_xml(swap_schedule, swap_mode))
-        zf.writestr("Metadata/model_settings.config", _build_model_settings_config(mesh))
+    export_bambu_project(
+        mesh,
+        swap_schedule,
+        output_path,
+        swap_mode,
+        step_height_mm=step_height_mm,
+        first_layer_height_mm=first_layer_height_mm,
+    )

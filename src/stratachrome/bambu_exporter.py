@@ -31,7 +31,6 @@ def export_bambu_project(
     *,
     step_height_mm: float = 0.10,
     first_layer_height_mm: float = 0.20,
-    template_3mf: Path | None = None,
 ) -> None:
     """Export a Bambu project with a base filament and later tool changes."""
     if swap_mode not in {"ams", "manual"}:
@@ -50,7 +49,6 @@ def export_bambu_project(
         swap_schedule,
         step_height_mm=step_height_mm,
         first_layer_height_mm=first_layer_height_mm,
-        template_3mf=template_3mf,
     )
     plate_center_x, plate_center_y = plate_center_from_settings(
         json.loads(project_settings_config)

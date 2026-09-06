@@ -12,6 +12,7 @@ import zipfile
 import numpy as np
 
 from stratachrome.bambu_exporter import export_bambu_project
+from stratachrome.export_3mf import export_bambu_3mf
 from stratachrome.bambu_project import NS_3MF, NS_BAMBU, NS_PRODUCTION, NS_RELS
 from stratachrome.depth_mapper import SwapEvent
 from stratachrome.mesh_builder import TriangleMesh
@@ -90,6 +91,12 @@ class BambuExporterTests(unittest.TestCase):
                 self.assertEqual(len(object_build), 0)
 
                 settings = json.loads(archive.read("Metadata/project_settings.config"))
+                self.assertGreater(len(settings), 100)
+                self.assertEqual(settings["printer_model"], "Bambu Lab X1 Carbon")
+                self.assertEqual(
+                    settings["printer_settings_id"],
+                    "Bambu Lab X1 Carbon 0.4 nozzle",
+                )
                 self.assertEqual(settings["filament_colour"], ["#000000", "#FF0000", "#FFFFFF"])
                 self.assertEqual(settings["layer_height"], "0.1")
 
@@ -109,6 +116,19 @@ class BambuExporterTests(unittest.TestCase):
             self.assertEqual([layer.get("extruder") for layer in layers], ["2", "3", "2"])
             self.assertEqual([layer.get("top_z") for layer in layers], ["0.400000", "0.600000", "0.800000"])
             self.assertTrue(all(layer.get("gcode") == "tool_change" for layer in layers))
+
+    def test_legacy_public_exporter_delegates_to_native_bambu_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "project.3mf"
+            export_bambu_3mf(self.mesh, self.swaps, output)
+
+            with zipfile.ZipFile(output) as archive:
+                settings = json.loads(archive.read("Metadata/project_settings.config"))
+                self.assertEqual(len(archive.namelist()), 9)
+                self.assertEqual(
+                    settings["filament_colour"],
+                    ["#000000", "#FF0000", "#FFFFFF"],
+                )
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from stratachrome.color_engine import (
     plan_tier_colors,
 )
 from stratachrome.depth_mapper import TwoTierDepthMapper
-from stratachrome.export_3mf import export_bambu_3mf
+from stratachrome.bambu_exporter import export_bambu_project
 from stratachrome.mesh_builder import PhysicalDimensions, WatertightMeshBuilder
 from stratachrome.optical_model import (
     ColorLayerMapper,
@@ -87,7 +87,7 @@ def _parse_arguments() -> argparse.Namespace:
         type=int,
         choices=(2, 3, 4),
         default=4,
-        help="Maximum dominant filament colors selected per tier (default: 4).",
+        help="Number of dominant filament colors selected per tier (default: 4).",
     )
     parser.add_argument(
         "--max-layers-per-filament",
@@ -221,7 +221,14 @@ def main() -> int:
     print(f"   Vertices: {mesh.vertex_count:,} | Triangles: {mesh.face_count:,}")
 
     print(f"8. Packaging Bambu Studio / Orca Slicer 3MF into '{args.output}'...")
-    export_bambu_3mf(mesh, height_result.swap_schedule, args.output, swap_mode=args.swap_mode)
+    export_bambu_project(
+        mesh,
+        height_result.swap_schedule,
+        args.output,
+        swap_mode=args.swap_mode,
+        step_height_mm=args.layer_height,
+        first_layer_height_mm=args.first_layer,
+    )
 
     print("\nStratachrome export complete!")
     if args.swap_mode == "manual":

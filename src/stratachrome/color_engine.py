@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import combinations
 from typing import Sequence
 
 import numpy as np
@@ -197,7 +196,7 @@ def plan_tier_colors(
     max_layers_per_filament: int = 120,
     collection: Sequence[FilamentRecord] | None = None,
 ) -> TierColorPlan:
-    """Jointly choose a 2–4 color subset and its TD-driven layer schedule."""
+    """Choose the requested dominant palette and optimize every color's layer count."""
     candidate_palette = select_tier_palette(
         image,
         matte,
@@ -210,31 +209,18 @@ def plan_tier_colors(
         matte,
         foreground=foreground,
     )
-    matches = candidate_palette.matches
-    minimum_colors = 2 if len(matches) >= 2 else 1
-
-    best_plan: TierColorPlan | None = None
-    for color_count in range(minimum_colors, len(matches) + 1):
-        for selected_matches in combinations(matches, color_count):
-            palette = TierPalette(tuple(selected_matches))
-            schedule = optimize_tier_schedule(
-                palette.filaments,
-                targets,
-                step_height_mm=step_height_mm,
-                first_layer_height_mm=first_layer_height_mm,
-                initial_substrate_lab=initial_substrate_lab,
-                layer_penalty=layer_penalty,
-                max_layers_per_filament=max_layers_per_filament,
-            )
-            score = (
-                schedule.mean_delta_e
-                + layer_penalty * len(schedule.states)
-                + color_penalty * (color_count - 1)
-            )
-            plan = TierColorPlan(palette, schedule, round(score, 4))
-            if best_plan is None or plan.selection_score < best_plan.selection_score:
-                best_plan = plan
-
-    if best_plan is None:
-        raise RuntimeError("Tier palette search produced no candidate plan.")
-    return best_plan
+    schedule = optimize_tier_schedule(
+        candidate_palette.filaments,
+        targets,
+        step_height_mm=step_height_mm,
+        first_layer_height_mm=first_layer_height_mm,
+        initial_substrate_lab=initial_substrate_lab,
+        layer_penalty=layer_penalty,
+        max_layers_per_filament=max_layers_per_filament,
+    )
+    score = (
+        schedule.mean_delta_e
+        + layer_penalty * len(schedule.states)
+        + color_penalty * (len(candidate_palette.filaments) - 1)
+    )
+    return TierColorPlan(candidate_palette, schedule, round(score, 4))

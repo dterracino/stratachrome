@@ -146,7 +146,7 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--layer-height` | `0.10` | Standard vertical layer step height in millimeters. |
 | `--swap-mode` | `ams` | Filament change mode: `ams` for multi-material auto-switching, `manual` for single-extruder pause triggers. |
 | `--device` | `auto` | Compute device for transformer inference (`cuda` or `cpu`). |
-| `--colors-per-tier` | `4` | Maximum palette size considered per tier; the planner chooses the best 2–4 color subset. |
+| `--colors-per-tier` | `4` | Requested dominant filament count for each tier; every selected filament receives at least one layer. |
 | `--max-layers-per-filament` | `120` | Safety bound for one filament's optical convergence search, not a target layer count. |
 
 ### `stratachrome-segment`

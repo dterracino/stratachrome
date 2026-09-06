@@ -104,10 +104,12 @@ class ColorToolsIntegrationTests(unittest.TestCase):
             0.2 + 0.1 * (len(schedule.states) - 1),
         )
 
-    def test_tier_planner_selects_palette_size_and_schedule_together(self) -> None:
+    def test_tier_planner_preserves_requested_palette_size(self) -> None:
         pixels = np.zeros((24, 24, 3), dtype=np.uint8)
-        pixels[:, :12] = (10, 40, 100)
-        pixels[:, 12:] = (235, 220, 190)
+        pixels[:12, :12] = (10, 40, 100)
+        pixels[:12, 12:] = (235, 220, 190)
+        pixels[12:, :12] = (160, 20, 30)
+        pixels[12:, 12:] = (20, 150, 60)
         image = Image.fromarray(pixels, mode="RGB")
         lab = extract_perceptual_lab(image)
         matte = np.zeros((24, 24), dtype=np.float32)
@@ -121,8 +123,9 @@ class ColorToolsIntegrationTests(unittest.TestCase):
             max_layers_per_filament=12,
         )
 
-        self.assertGreaterEqual(len(plan.palette.filaments), 2)
-        self.assertLessEqual(len(plan.palette.filaments), 4)
+        self.assertEqual(len(plan.palette.filaments), 4)
+        self.assertEqual(len(plan.schedule.assignments), 4)
+        self.assertTrue(all(count >= 1 for count in plan.schedule.layer_counts))
         self.assertEqual(
             len(plan.schedule.states),
             sum(plan.schedule.layer_counts),
