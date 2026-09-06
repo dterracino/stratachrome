@@ -6,15 +6,17 @@
 
 **Stratachrome** is an automated multi-color 3D relief printing pipeline designed for standard single-extruder FDM 3D printers and multi-material systems (Bambu Lab AMS, Orca Slicer).
 
-By coupling **BiRefNet bilateral background segmentation** with **Beer-Lambert transmission models** and **CIE L\*C\*h color spaces**, Stratachrome decomposes any 2D image into an intelligent two-tier physical relief print. It solves the color-bleeding and dynamic-range compression limitations of standard single-stack heightmaps by seating a dedicated foreground tier atop a solid background pedestal, outputting watertight 2-manifold triangle meshes packaged inside ready-to-slice Bambu/Orca 3MF containers.
+By coupling **BiRefNet bilateral background segmentation** with TD-driven optical modeling and **CIELAB/CIEDE2000** color matching, Stratachrome decomposes a 2D image into an intelligent two-tier physical relief print. It selects real Bambu Lab PLA Basic/Matte filaments independently for each tier, derives the useful layer count from perceptual fit, and packages a watertight 2-manifold mesh inside a ready-to-slice Bambu/Orca 3MF container.
 
 ---
 
 ## Key Features
 
 * **Intelligent Two-Tier Geometry**: Automatically isolates foreground subjects from background scenes using BiRefNet, creating a dedicated height budget for both and preventing color transmission bleed-through.
-* **Predictive Optical Modeling**: Uses the Beer-Lambert law ($I = I_0 e^{-\alpha z}$) to accurately model the transmission distance ($TD$) and perceptual lightness ($L^*$) of real-world 3D printing filaments.
-* **Perceptual Color Precision**: Direct integration with `color-match-tools` (`color_tools.conversions`) for accurate CIELCh and CIELAB color-space mapping.
+* **Adaptive Tier Palettes**: Finds perceptually dominant colors independently in each tier and selects the best 2–4 unique matches from `FilamentCollections.BAMBU_PLA_BASICMATTE`. Filaments may be reused across tiers.
+* **Predictive Optical Modeling**: Uses each selected filament's measured color and TD value to simulate successive layers in linear CIE XYZ.
+* **Perceptual Color Precision**: Uses `color-match-tools` for image/filament CIELAB conversion, dominant-color analysis, filament records and collections, and vectorized CIEDE2000 comparisons.
+* **Information-Driven Thickness**: Optimizes layer schedules by balancing reconstruction error against the diminishing perceptual value of each additional layer. Thickness is an output, not a preset target.
 * **Calibrated Layer Alignment**: Built with a dedicated 0.20 mm first-layer base for reliable bed adhesion and 0.10 mm layer increments matching standard slicer toolpaths.
 * **Flexible Swap Modes**: Supports automated multi-material hardware changers (`--swap-mode ams`) or single-extruder pause triggers (`--swap-mode manual`).
 * **Auto-Scaling Aspect Ratios**: Specify target maximum dimension in millimeters (`--size`); landscape and portrait images automatically scale to fit within your build plate envelope.
@@ -31,14 +33,17 @@ Input Image
     │
     ├──► [Segmentation] (BiRefNet) ─────────────► Alpha Matte
     │                                                   │
-    └──► [Color Engine] (color_tools CIELCh) ──► Full L* Matrix
+    └──► [Color Engine] (color_tools CIELAB) ──► Full Lab Image
                                                         │
          ┌──────────────────────────────────────────────┘
          ▼
-[Lightness Partitioning] ──► Background L* & Foreground L*
+[Tier Color Analysis] ─────► Dominant Background & Foreground Colors
          │
          ▼
-[Optical Modeling] ────────► Beer-Lambert Transmission LUTs
+[Filament Search] ─────────► Bambu PLA Basic/Matte Candidates
+         │
+         ▼
+[Schedule Optimization] ───► TD/XYZ Layer Curves + CIEDE2000 Lookup
          │
          ▼
 [Two-Tier Depth Mapper] ───► Solid Pedestal Elevation + Anti-Sheer Blend
@@ -141,6 +146,8 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--layer-height` | `0.10` | Standard vertical layer step height in millimeters. |
 | `--swap-mode` | `ams` | Filament change mode: `ams` for multi-material auto-switching, `manual` for single-extruder pause triggers. |
 | `--device` | `auto` | Compute device for transformer inference (`cuda` or `cpu`). |
+| `--colors-per-tier` | `4` | Maximum palette size considered per tier; the planner chooses the best 2–4 color subset. |
+| `--max-layers-per-filament` | `120` | Safety bound for one filament's optical convergence search, not a target layer count. |
 
 ### `stratachrome-segment`
 
@@ -187,11 +194,11 @@ stratachrome/
 ├── src/
 │   └── stratachrome/
 │       ├── __init__.py            # Public API exports
-│       ├── color_engine.py        # color_tools CIELCh bridge & filament L* calibration
+│       ├── color_engine.py        # Dominant tier colors, filament matching, and joint planning
 │       ├── depth_mapper.py        # Two-tier height budget & solid pedestal enforcement
 │       ├── export_3mf.py          # OPC/3MF packaging & layer pause metadata generator
 │       ├── mesh_builder.py        # 2-manifold triangular mesh & binary STL generator
-│       ├── optical_model.py       # Beer-Lambert transmission & monotonic L* sequencing
+│       ├── optical_model.py       # TD/XYZ simulation, CIEDE2000 mapping, schedule optimization
 │       ├── pipeline.py            # End-to-end CLI pipeline orchestrator
 │       ├── segment_cli.py         # Standalone segmentation & matte verification CLI
 │       ├── segmentation.py        # BiRefNet background extraction & edge feathering

@@ -10,11 +10,11 @@ Incorporates a dedicated first layer height (default 0.20mm) into base tier geom
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast
 
 import numpy as np
 
-from stratachrome.optical_model import LayerOpticalState, LightnessLayerMapper
+from stratachrome.optical_model import ColorLayerMapper, LayerOpticalState
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,7 @@ class TierHeightBudget:
         first_layer_height_mm: Height for the bed-contact layer (default: 0.20mm).
         floor_z_mm: Base elevation where this tier starts.
     """
+
     layer_count: int
     step_height_mm: float = 0.10
     first_layer_height_mm: float = 0.20
@@ -68,6 +69,7 @@ class SwapEvent:
         filament_hex: Hex code of the incoming filament.
         tier_name: Which zone this filament belongs to ('background' or 'foreground').
     """
+
     global_layer_idx: int
     z_height_mm: float
     filament_name: str
@@ -87,6 +89,7 @@ class HeightmapResult:
         max_height_mm: Maximum physical elevation reached.
         swap_schedule: Chronological list of filament swap pauses.
     """
+
     z_grid: np.ndarray
     bg_surface_z: np.ndarray
     fg_surface_z: np.ndarray
@@ -96,17 +99,17 @@ class HeightmapResult:
 
 
 def _validate_image_dimensions(
-    bg_l: np.ndarray,
-    fg_l: np.ndarray,
+    bg_lab: np.ndarray,
+    fg_lab: np.ndarray,
     matte: np.ndarray,
 ) -> None:
-    """Verifies that all input matrices share identical 2D spatial dimensions."""
-    if bg_l.shape != fg_l.shape or bg_l.shape != matte.shape:
+    """Verify that both Lab images and the matte share spatial dimensions."""
+    if bg_lab.shape != fg_lab.shape or bg_lab.shape[:2] != matte.shape:
         raise ValueError(
-            f"Shape mismatch: bg_l {bg_l.shape}, fg_l {fg_l.shape}, matte {matte.shape}"
+            f"Shape mismatch: bg_lab {bg_lab.shape}, " f"fg_lab {fg_lab.shape}, matte {matte.shape}"
         )
-    if bg_l.ndim != 2:
-        raise ValueError(f"Arrays must be 2D grids, got ndim={bg_l.ndim}")
+    if bg_lab.ndim != 3 or bg_lab.shape[-1] != 3 or matte.ndim != 2:
+        raise ValueError("Lab images must be H x W x 3 and matte must be H x W.")
 
 
 def _build_tier_height_array(
@@ -126,14 +129,14 @@ def _build_tier_height_array(
 
 
 def _map_zone_to_elevations(
-    target_l: np.ndarray,
-    mapper: LightnessLayerMapper,
+    target_lab: np.ndarray,
+    mapper: ColorLayerMapper,
     height_lut: np.ndarray,
 ) -> np.ndarray:
-    """Maps a 2D L* channel to discrete millimeter elevations using a height LUT."""
-    layer_indices = mapper.map_image_lightness_to_layers(target_l)
+    """Map a Lab image to discrete millimeter elevations using a height LUT."""
+    layer_indices = mapper.map_image_lab_to_layers(target_lab)
     clamped_indices = np.clip(layer_indices, 0, len(height_lut) - 1)
-    return height_lut[clamped_indices]
+    return cast(np.ndarray, height_lut[clamped_indices])
 
 
 def _blend_boundaries(
@@ -147,7 +150,7 @@ def _blend_boundaries(
     """
     clamped_matte = np.clip(matte, 0.0, 1.0).astype(np.float32)
     blended = (1.0 - clamped_matte) * bg_z + clamped_matte * fg_z
-    return blended.astype(np.float32)
+    return cast(np.ndarray, blended.astype(np.float32))
 
 
 def _extract_tier_swaps(
@@ -162,16 +165,16 @@ def _extract_tier_swaps(
 
     for state in states:
         fil = state.active_filament
-        if fil.name not in seen_filaments:
-            seen_filaments.add(fil.name)
+        if fil.id not in seen_filaments:
+            seen_filaments.add(fil.id)
             global_idx = state.layer_index + layer_offset
             z_pos = float(height_lut[state.layer_index])
             swaps.append(
                 SwapEvent(
                     global_layer_idx=global_idx,
                     z_height_mm=round(z_pos, 4),
-                    filament_name=fil.name,
-                    filament_hex=fil.hex_color,
+                    filament_name=f"{fil.maker} {fil.color}",
+                    filament_hex=fil.hex,
                     tier_name=tier_name,
                 )
             )
@@ -183,8 +186,8 @@ class TwoTierDepthMapper:
 
     def __init__(
         self,
-        bg_mapper: LightnessLayerMapper,
-        fg_mapper: LightnessLayerMapper,
+        bg_mapper: ColorLayerMapper,
+        fg_mapper: ColorLayerMapper,
         bg_states: list[LayerOpticalState],
         fg_states: list[LayerOpticalState],
         step_height_mm: float = 0.10,
@@ -224,25 +227,25 @@ class TwoTierDepthMapper:
 
     def generate_heightmap(
         self,
-        bg_l: np.ndarray,
-        fg_l: np.ndarray,
+        bg_lab: np.ndarray,
+        fg_lab: np.ndarray,
         matte: np.ndarray,
     ) -> HeightmapResult:
         """Assembles a full 3D surface grid from zone lightness channels and matte.
 
         Args:
-            bg_l: 2D float array of background CIELCh L* values (0.0 to 100.0).
-            fg_l: 2D float array of foreground CIELCh L* values (0.0 to 100.0).
+            bg_lab: Background target colors shaped H x W x 3.
+            fg_lab: Foreground target colors shaped H x W x 3.
             matte: 2D float array in [0.0, 1.0] representing foreground opacity.
 
         Returns:
             HeightmapResult containing the merged Z-grid and print schedule.
         """
-        _validate_image_dimensions(bg_l, fg_l, matte)
+        _validate_image_dimensions(bg_lab, fg_lab, matte)
 
         # 1. Map zone lightness to physical elevations
-        bg_z = _map_zone_to_elevations(bg_l, self._bg_mapper, self._bg_height_lut)
-        fg_z = _map_zone_to_elevations(fg_l, self._fg_mapper, self._fg_height_lut)
+        bg_z = _map_zone_to_elevations(bg_lab, self._bg_mapper, self._bg_height_lut)
+        fg_z = _map_zone_to_elevations(fg_lab, self._fg_mapper, self._fg_height_lut)
 
         # 2. Smoothly blend across feathered boundaries
         z_grid = _blend_boundaries(bg_z, fg_z, matte)

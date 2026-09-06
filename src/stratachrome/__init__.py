@@ -10,10 +10,15 @@ native Bambu/Orca .3mf project containers.
 from __future__ import annotations
 
 from stratachrome.color_engine import (
-    auto_sort_filaments_by_lightness,
-    build_layer_schedule,
-    create_filament,
+    FilamentMatch,
+    TierColorPlan,
+    TierPalette,
+    build_tier_image,
+    extract_perceptual_lab,
     extract_perceptual_lightness,
+    plan_tier_colors,
+    sample_tier_lab,
+    select_tier_palette,
 )
 from stratachrome.depth_mapper import (
     HeightmapResult,
@@ -29,10 +34,12 @@ from stratachrome.mesh_builder import (
     export_binary_stl,
 )
 from stratachrome.optical_model import (
-    Filament,
+    ColorLayerMapper,
     FilamentLayerAssignment,
     LayerOpticalState,
-    LightnessLayerMapper,
+    OptimizedTierSchedule,
+    assignments_from_layer_counts,
+    optimize_tier_schedule,
     simulate_tier_stack,
 )
 from stratachrome.segmentation import (
@@ -46,15 +53,22 @@ __version__ = "0.1.0"
 
 __all__ = [
     # Optical & Color
-    "Filament",
     "FilamentLayerAssignment",
     "LayerOpticalState",
-    "LightnessLayerMapper",
+    "OptimizedTierSchedule",
+    "ColorLayerMapper",
     "simulate_tier_stack",
-    "create_filament",
+    "optimize_tier_schedule",
+    "assignments_from_layer_counts",
+    "FilamentMatch",
+    "TierColorPlan",
+    "TierPalette",
+    "build_tier_image",
+    "extract_perceptual_lab",
     "extract_perceptual_lightness",
-    "auto_sort_filaments_by_lightness",
-    "build_layer_schedule",
+    "plan_tier_colors",
+    "sample_tier_lab",
+    "select_tier_palette",
     # Segmentation
     "ForegroundSegmenter",
     "SegmentationConfig",
