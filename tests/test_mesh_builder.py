@@ -46,17 +46,76 @@ class WatertightMeshBuilderTests(unittest.TestCase):
             height_faces = top[np.isclose(top[:, 0, 2], height)]
             height_areas = areas[np.isclose(top[:, 0, 2], height)]
             self.assertEqual(len(height_faces), 2)
-            self.assertAlmostEqual(float(np.sum(height_areas)), 50.0)
+            self.assertGreater(float(np.sum(height_areas)), 49.0)
+            self.assertLessEqual(float(np.sum(height_areas)), 50.0)
 
-    def test_mesh_contains_no_sloped_triangles(self) -> None:
+    def test_mesh_is_strictly_two_manifold(self) -> None:
         z_grid = np.asarray([[0.2, 0.6, 0.2], [0.7, 0.3, 0.8]], dtype=np.float32)
         mesh = WatertightMeshBuilder(PhysicalDimensions(30.0, 20.0)).build_mesh(z_grid)
-        triangles = mesh.vertices[mesh.faces]
+        edges = np.sort(
+            np.vstack(
+                (
+                    mesh.faces[:, [0, 1]],
+                    mesh.faces[:, [1, 2]],
+                    mesh.faces[:, [2, 0]],
+                )
+            ),
+            axis=1,
+        )
+        _, edge_use_counts = np.unique(edges, axis=0, return_counts=True)
 
-        flat_z = np.all(np.isclose(triangles[:, :, 2], triangles[:, :1, 2]), axis=1)
-        flat_x = np.all(np.isclose(triangles[:, :, 0], triangles[:, :1, 0]), axis=1)
-        flat_y = np.all(np.isclose(triangles[:, :, 1], triangles[:, :1, 1]), axis=1)
-        self.assertTrue(np.all(flat_z | flat_x | flat_y))
+        np.testing.assert_array_equal(edge_use_counts, np.full_like(edge_use_counts, 2))
+
+        triangles = mesh.vertices[mesh.faces]
+        normals = np.cross(
+            triangles[:, 1] - triangles[:, 0],
+            triangles[:, 2] - triangles[:, 0],
+        )
+        self.assertTrue(np.all(np.linalg.norm(normals, axis=1) > 0.0))
+
+    def test_coplanar_pixel_region_removes_interior_faces(self) -> None:
+        z_grid = np.full((8, 10), 0.4, dtype=np.float32)
+        mesh = WatertightMeshBuilder(PhysicalDimensions(20.0, 16.0)).build_mesh(z_grid)
+        unreduced_top_faces = 2 * (2 * z_grid.shape[0] - 1) * (
+            2 * z_grid.shape[1] - 1
+        )
+        triangles = mesh.vertices[mesh.faces]
+        top_faces = np.all(
+            np.isclose(triangles[:, :, 2], 0.4),
+            axis=1,
+        )
+
+        self.assertLess(int(np.count_nonzero(top_faces)), unreduced_top_faces // 4)
+        self.assertEqual(len(np.unique(mesh.faces)), mesh.vertex_count)
+
+    def test_mesh_build_reports_reduction_progress(self) -> None:
+        messages: list[str] = []
+        z_grid = np.full((8, 10), 0.4, dtype=np.float32)
+
+        WatertightMeshBuilder(PhysicalDimensions(20.0, 16.0)).build_mesh(
+            z_grid,
+            progress=messages.append,
+        )
+
+        self.assertTrue(any("Reducing plateau elevation" in message for message in messages))
+        self.assertTrue(any("Reduced top surface" in message for message in messages))
+        self.assertTrue(any("Compacting unused vertices" in message for message in messages))
+        self.assertTrue(messages[-1].startswith("Mesh complete:"))
+
+    def test_progress_is_bounded_for_many_distinct_elevations(self) -> None:
+        block_heights = np.arange(100, dtype=np.float32).reshape(10, 10) * 0.1 + 0.2
+        z_grid = np.repeat(np.repeat(block_heights, 2, axis=0), 2, axis=1)
+        messages: list[str] = []
+
+        WatertightMeshBuilder(PhysicalDimensions(20.0, 20.0)).build_mesh(
+            z_grid,
+            progress=messages.append,
+        )
+
+        elevation_messages = [
+            message for message in messages if message.startswith("Reducing plateau elevation")
+        ]
+        self.assertLessEqual(len(elevation_messages), 22)
 
 
 if __name__ == "__main__":

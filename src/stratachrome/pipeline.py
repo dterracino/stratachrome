@@ -221,7 +221,10 @@ def main() -> int:
     print("7. Building watertight manifold triangle mesh...")
     dimensions = PhysicalDimensions(width_mm=width_mm, height_mm=height_mm, base_floor_z_mm=0.0)
     mesh_builder = WatertightMeshBuilder(dimensions)
-    mesh = mesh_builder.build_mesh(height_result.z_grid)
+    mesh = mesh_builder.build_mesh(
+        height_result.z_grid,
+        progress=lambda message: print(f"   {message}", flush=True),
+    )
     print(f"   Vertices: {mesh.vertex_count:,} | Triangles: {mesh.face_count:,}")
 
     print(f"8. Packaging Bambu Studio / Orca Slicer 3MF into '{args.output}'...")

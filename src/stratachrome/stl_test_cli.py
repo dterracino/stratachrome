@@ -86,7 +86,10 @@ def main() -> int:
 
     print("Building watertight manifold mesh...")
     builder = WatertightMeshBuilder(dims)
-    mesh = builder.build_mesh(z_grid)
+    mesh = builder.build_mesh(
+        z_grid,
+        progress=lambda message: print(f"  {message}", flush=True),
+    )
     print(f"Generated {mesh.vertex_count:,} vertices and {mesh.face_count:,} triangles.")
 
     print(f"Exporting binary STL to {args.output}...")

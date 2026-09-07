@@ -21,7 +21,8 @@ By coupling **BiRefNet bilateral background segmentation** with TD-driven optica
 * **Flexible Swap Modes**: Supports automated multi-material hardware changers (`--swap-mode ams`) or single-extruder pause triggers (`--swap-mode manual`).
 * **Auto-Scaling Aspect Ratios**: Specify target maximum dimension in millimeters (`--size`); landscape and portrait images automatically scale to fit within your build plate envelope.
 * **Slicer-Optimized Grid Resolution**: Built around standard 0.42 mm nozzle line widths and Arachne dynamic extrusion parameters, sampling up to 1000 px resolution for Nyquist fidelity without slicing lag or mesh bloat.
-* **Flat Pixel Terraces**: Gives every resampled image pixel a full-size horizontal top at its selected layer, with vertical walls between different heights. No sloped triangle can expose an unintended intermediate filament color.
+* **Flat Pixel Terraces**: Gives every resampled image pixel a horizontal plateau at its selected layer. Microscopic transition strips join neighboring plateaus without visible color bands, open edges, or non-manifold T-junctions.
+* **2D Coplanar Reduction**: Merges connected same-height pixel plateaus into boundary-only triangulations, removing their interior pixel edges while preserving transition topology.
 * **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives featuring decomposed model components (`3D/Objects/object_1.model`) and optional layer pause markers (`Metadata/custom_gcode_per_layer.xml`).
 
 ---
