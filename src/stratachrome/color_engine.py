@@ -13,9 +13,13 @@ from color_tools import (
     FilamentRecord,
     rgb_to_lab,
 )
-from color_tools.image import DominantColor, dominant_colors
+from color_tools.image import DominantColor
 
 from stratachrome.optical_model import OptimizedTierSchedule, optimize_tier_schedule
+
+
+_PALETTE_ANALYSIS_MAX_DIMENSION = 64
+_NEW_FILAMENT_REUSE_PENALTY = 0.75
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,71 @@ class TierColorPlan:
     palette: TierPalette
     schedule: OptimizedTierSchedule
     selection_score: float
+
+
+def _quantized_tier_colors(
+    image: Image.Image,
+    matte: np.ndarray,
+    *,
+    foreground: bool,
+    color_count: int,
+) -> tuple[DominantColor, ...]:
+    """Downsample one tier and quantize it to representative RGB colors."""
+    if not 1 <= color_count <= 16:
+        raise ValueError("color_count must be between 1 and 16.")
+    rgb_image = image.convert("RGB")
+    if matte.shape != (rgb_image.height, rgb_image.width):
+        raise ValueError("Image and matte dimensions must match for palette analysis.")
+
+    scale = _PALETTE_ANALYSIS_MAX_DIMENSION / max(rgb_image.size)
+    small_size = (
+        max(1, round(rgb_image.width * scale)),
+        max(1, round(rgb_image.height * scale)),
+    )
+    small_rgb = rgb_image.resize(small_size, Image.Resampling.NEAREST)
+    matte_image = Image.fromarray(
+        np.rint(np.clip(matte, 0.0, 1.0) * 255.0).astype(np.uint8),
+        mode="L",
+    ).resize(small_size, Image.Resampling.NEAREST)
+    small_array = np.asarray(small_rgb, dtype=np.uint8)
+    small_matte = np.asarray(matte_image, dtype=np.uint8)
+    tier_mask = small_matte >= 128 if foreground else small_matte < 128
+    tier_pixels = small_array[tier_mask]
+    if len(tier_pixels) == 0:
+        tier_name = "foreground" if foreground else "background"
+        raise ValueError(f"Downsampled image contains no {tier_name} pixels.")
+
+    pixel_strip = Image.fromarray(tier_pixels.reshape(1, -1, 3), mode="RGB")
+    quantized = pixel_strip.quantize(
+        colors=color_count,
+        method=Image.Quantize.MEDIANCUT,
+        dither=Image.Dither.NONE,
+    )
+    palette_values = quantized.getpalette()
+    color_counts = quantized.getcolors(maxcolors=color_count)
+    if palette_values is None or color_counts is None:
+        raise RuntimeError("Pillow did not return the quantized tier palette.")
+
+    targets: list[DominantColor] = []
+    for population_count, palette_index in sorted(color_counts, reverse=True):
+        offset = palette_index * 3
+        rgb = tuple(int(value) for value in palette_values[offset : offset + 3])
+        population = population_count / len(tier_pixels)
+        targets.append(
+            DominantColor(
+                rgb=rgb,  # type: ignore[arg-type]
+                lab=rgb_to_lab(rgb),  # type: ignore[arg-type]
+                population=population,
+                dominance=population,
+                global_salience=0.0,
+                local_contrast=0.0,
+                spatial_distribution=0.0,
+                spatial_coherence=0.0,
+                lightness_contrast=0.0,
+                focal_importance=0.0,
+            )
+        )
+    return tuple(targets)
 
 
 def extract_perceptual_lab(image: Image.Image | np.ndarray) -> np.ndarray:
@@ -102,11 +171,14 @@ def select_tier_palette(
     foreground: bool,
     color_count: int = 4,
     collection: Sequence[FilamentRecord] | None = None,
+    preferred_filaments: Sequence[FilamentRecord] = (),
+    new_filament_penalty: float = _NEW_FILAMENT_REUSE_PENALTY,
 ) -> TierPalette:
-    """Find dominant tier colors and match them to unique real filaments."""
-    if not 1 <= color_count <= 4:
-        raise ValueError("color_count must be between 1 and 4.")
-
+    """Match quantized tier colors to filaments, preferring reusable ones."""
+    if not 1 <= color_count <= 8:
+        raise ValueError("color_count must be between 1 and 8.")
+    if new_filament_penalty < 0.0:
+        raise ValueError("new_filament_penalty cannot be negative.")
     available = tuple(
         collection if collection is not None else FilamentCollections.BAMBU_PLA_BASICMATTE
     )
@@ -118,38 +190,51 @@ def select_tier_palette(
     if not available:
         raise ValueError("The filament search collection has no records with TD values.")
 
-    tier_image = build_tier_image(image, matte, foreground=foreground)
-    targets = dominant_colors(tier_image, count=color_count)
+    targets = _quantized_tier_colors(
+        image,
+        matte,
+        foreground=foreground,
+        color_count=color_count * 2,
+    )
     palette = FilamentPalette(list(available))
+    available_ids = {filament.id for filament in available}
+    preferred_ids = {
+        filament.id
+        for filament in preferred_filaments
+        if filament.id in available_ids
+    }
     used_ids: set[str] = set()
     used_rgb: set[tuple[int, int, int]] = set()
     matches: list[FilamentMatch] = []
-
     for target in targets:
         candidates = palette.nearest_filaments(
             target.rgb,
             metric="de2000",
-            count=min(50, len(available)),
+            count=len(available),
             owned=False,
         )
-        selected = next(
-            (
-                (filament, distance)
-                for filament, distance in candidates
-                if filament.id not in used_ids and filament.rgb not in used_rgb
+        filament, distance = min(
+            candidates,
+            key=lambda candidate: (
+                candidate[1]
+                + (
+                    0.0
+                    if not preferred_ids or candidate[0].id in preferred_ids
+                    else new_filament_penalty
+                ),
+                candidate[1],
             ),
-            None,
         )
-        if selected is None:
+        if filament.id in used_ids or filament.rgb in used_rgb:
             continue
-        filament, distance = selected
         used_ids.add(filament.id)
         used_rgb.add(filament.rgb)
         matches.append(FilamentMatch(target, filament, float(distance)))
+        if len(matches) == color_count:
+            break
 
     if not matches:
-        raise ValueError("No dominant tier colors could be matched to a filament.")
-
+        raise ValueError("No quantized tier colors could be matched to a filament.")
     matches.sort(key=lambda match: match.filament.lab[0])
     return TierPalette(tuple(matches))
 
@@ -192,35 +277,56 @@ def plan_tier_colors(
     first_layer_height_mm: float = 0.20,
     initial_substrate_lab: tuple[float, float, float] | None = None,
     layer_penalty: float = 0.25,
-    color_penalty: float = 0.50,
-    max_layers_per_filament: int = 120,
+    max_layers_per_tier: int = 120,
     collection: Sequence[FilamentRecord] | None = None,
+    preferred_filaments: Sequence[FilamentRecord] = (),
+    new_filament_penalty: float = _NEW_FILAMENT_REUSE_PENALTY,
 ) -> TierColorPlan:
-    """Choose the requested dominant palette and optimize every color's layer count."""
+    """Quantize a tier, match its filaments, and optimize physical thickness."""
+    targets = sample_tier_lab(
+        lab_image,
+        matte,
+        foreground=foreground,
+    )
     candidate_palette = select_tier_palette(
         image,
         matte,
         foreground=foreground,
         color_count=max_colors,
         collection=collection,
+        preferred_filaments=preferred_filaments,
+        new_filament_penalty=new_filament_penalty,
     )
-    targets = sample_tier_lab(
-        lab_image,
-        matte,
-        foreground=foreground,
-    )
-    schedule = optimize_tier_schedule(
-        candidate_palette.filaments,
-        targets,
-        step_height_mm=step_height_mm,
-        first_layer_height_mm=first_layer_height_mm,
-        initial_substrate_lab=initial_substrate_lab,
-        layer_penalty=layer_penalty,
-        max_layers_per_filament=max_layers_per_filament,
-    )
-    score = (
-        schedule.mean_delta_e
-        + layer_penalty * len(schedule.states)
-        + color_penalty * (len(candidate_palette.filaments) - 1)
-    )
-    return TierColorPlan(candidate_palette, schedule, round(score, 4))
+    matches = list(candidate_palette.matches)
+    while matches:
+        working_palette = TierPalette(
+            tuple(sorted(matches, key=lambda match: match.filament.lab[0]))
+        )
+        try:
+            schedule = optimize_tier_schedule(
+                working_palette.filaments,
+                targets,
+                step_height_mm=step_height_mm,
+                first_layer_height_mm=first_layer_height_mm,
+                initial_substrate_lab=initial_substrate_lab,
+                target_by_filament={
+                    match.filament.id: match.target.lab
+                    for match in working_palette.matches
+                },
+                layer_penalty=layer_penalty,
+                max_layers_per_tier=max_layers_per_tier,
+            )
+        except ValueError as error:
+            if "cannot satisfy the TD minimum" not in str(error):
+                raise
+            removable = [
+                match
+                for match in matches
+                if match.filament.color.strip().casefold() != "black"
+            ]
+            if not removable:
+                raise
+            matches.remove(min(removable, key=lambda match: match.target.population))
+            continue
+        return TierColorPlan(working_palette, schedule, schedule.mean_delta_e)
+    raise ValueError("No optically valid quantized tier palette could be constructed.")

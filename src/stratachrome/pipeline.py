@@ -85,15 +85,18 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--colors-per-tier",
         type=int,
-        choices=(2, 3, 4),
+        choices=tuple(range(2, 9)),
         default=4,
-        help="Number of dominant filament colors selected per tier (default: 4).",
+        help="Maximum filament colors per tier, from 2 to 8 (default: 4).",
     )
     parser.add_argument(
-        "--max-layers-per-filament",
+        "--max-layers-per-tier",
         type=int,
         default=120,
-        help="Safety bound for optical schedule search per filament (default: 120).",
+        help=(
+            "Maximum total layers available to each tier; the optimizer may use "
+            "fewer when extra thickness is not useful (default: 120)."
+        ),
     )
     return parser.parse_args()
 
@@ -176,7 +179,7 @@ def main() -> int:
         max_colors=args.colors_per_tier,
         step_height_mm=args.layer_height,
         first_layer_height_mm=args.first_layer,
-        max_layers_per_filament=args.max_layers_per_filament,
+        max_layers_per_tier=args.max_layers_per_tier,
     )
     bg_schedule = bg_plan.schedule
     bg_states = list(bg_schedule.states)
@@ -192,7 +195,8 @@ def main() -> int:
         step_height_mm=args.layer_height,
         first_layer_height_mm=args.layer_height,
         initial_substrate_lab=bg_states[-1].simulated_lab,
-        max_layers_per_filament=args.max_layers_per_filament,
+        max_layers_per_tier=args.max_layers_per_tier,
+        preferred_filaments=bg_plan.palette.filaments,
     )
     fg_schedule = fg_plan.schedule
     fg_states = list(fg_schedule.states)

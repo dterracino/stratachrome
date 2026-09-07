@@ -6,22 +6,22 @@
 
 **Stratachrome** is an automated multi-color 3D relief printing pipeline designed for standard single-extruder FDM 3D printers and multi-material systems (Bambu Lab AMS, Orca Slicer).
 
-By coupling **BiRefNet bilateral background segmentation** with TD-driven optical modeling and **CIELAB/CIEDE2000** color matching, Stratachrome decomposes a 2D image into an intelligent two-tier physical relief print. It selects real Bambu Lab PLA Basic/Matte filaments independently for each tier, derives the useful layer count from perceptual fit, and packages a watertight 2-manifold mesh inside a ready-to-slice Bambu/Orca 3MF container.
+By coupling **BiRefNet bilateral background segmentation** with TD-driven optical modeling and **CIELAB/CIEDE2000** color matching, Stratachrome decomposes a 2D image into an intelligent two-tier physical relief print. It selects real Bambu Lab PLA Basic/Matte filaments independently for each tier, derives the useful layer count from perceptual fit, and packages a closed terraced mesh inside a ready-to-slice Bambu/Orca 3MF container.
 
 ---
 
 ## Key Features
 
 * **Intelligent Two-Tier Geometry**: Automatically isolates foreground subjects from background scenes using BiRefNet, creating a dedicated height budget for both and preventing color transmission bleed-through.
-* **Adaptive Tier Palettes**: Finds perceptually dominant colors independently in each tier and selects the best 2–4 unique matches from `FilamentCollections.BAMBU_PLA_BASICMATTE`. Filaments may be reused across tiers.
+* **Adaptive Tier Palettes**: Resizes each tier to a 64-pixel maximum edge with nearest-neighbor sampling, quantizes it to twice the requested filament cap, and selects up to the requested 2–8 colors from `FilamentCollections.BAMBU_PLA_BASICMATTE`. Filaments may be reused across tiers.
 * **Predictive Optical Modeling**: Uses each selected filament's measured color and TD value to simulate successive layers in linear CIE XYZ.
-* **Perceptual Color Precision**: Uses `color-match-tools` for image/filament CIELAB conversion, dominant-color analysis, filament records and collections, and vectorized CIEDE2000 comparisons.
+* **Perceptual Color Precision**: Uses `color-match-tools` for image/filament CIELAB conversion, filament records and collections, and vectorized CIEDE2000 comparisons.
 * **Information-Driven Thickness**: Optimizes layer schedules by balancing reconstruction error against the diminishing perceptual value of each additional layer. Thickness is an output, not a preset target.
 * **Calibrated Layer Alignment**: Built with a dedicated 0.20 mm first-layer base for reliable bed adhesion and 0.10 mm layer increments matching standard slicer toolpaths.
 * **Flexible Swap Modes**: Supports automated multi-material hardware changers (`--swap-mode ams`) or single-extruder pause triggers (`--swap-mode manual`).
 * **Auto-Scaling Aspect Ratios**: Specify target maximum dimension in millimeters (`--size`); landscape and portrait images automatically scale to fit within your build plate envelope.
 * **Slicer-Optimized Grid Resolution**: Built around standard 0.42 mm nozzle line widths and Arachne dynamic extrusion parameters, sampling up to 1000 px resolution for Nyquist fidelity without slicing lag or mesh bloat.
-* **Watertight Manifold Meshes**: Generates counter-clockwise (CCW) wound top surfaces, flat baseplates, and perimeter skirts with zero degenerate triangles or non-manifold edges.
+* **Flat Pixel Terraces**: Gives every resampled image pixel a full-size horizontal top at its selected layer, with vertical walls between different heights. No sloped triangle can expose an unintended intermediate filament color.
 * **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives featuring decomposed model components (`3D/Objects/object_1.model`) and optional layer pause markers (`Metadata/custom_gcode_per_layer.xml`).
 
 ---
@@ -37,7 +37,7 @@ Input Image
                                                         │
          ┌──────────────────────────────────────────────┘
          ▼
-[Tier Color Analysis] ─────► Dominant Background & Foreground Colors
+[64px Tier Quantization] ──► Representative Background & Foreground Colors
          │
          ▼
 [Filament Search] ─────────► Bambu PLA Basic/Matte Candidates
@@ -146,8 +146,8 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--layer-height` | `0.10` | Standard vertical layer step height in millimeters. |
 | `--swap-mode` | `ams` | Filament change mode: `ams` for multi-material auto-switching, `manual` for single-extruder pause triggers. |
 | `--device` | `auto` | Compute device for transformer inference (`cuda` or `cpu`). |
-| `--colors-per-tier` | `4` | Requested dominant filament count for each tier; every selected filament receives at least one layer. |
-| `--max-layers-per-filament` | `120` | Safety bound for one filament's optical convergence search, not a target layer count. |
+| `--colors-per-tier` | `4` | Maximum filament count from 2 to 8 per tier. Each 64px nearest-neighbor tier image is quantized to twice this ceiling, providing extra matching candidates; duplicate matches can still collapse to fewer filaments and foreground selection prefers reusable background colors. |
+| `--max-layers-per-tier` | `120` | Maximum total layers available to each tier. TD and perceptual fit determine how many layers are actually used. |
 
 ### `stratachrome-segment`
 
@@ -194,10 +194,10 @@ stratachrome/
 ├── src/
 │   └── stratachrome/
 │       ├── __init__.py            # Public API exports
-│       ├── color_engine.py        # Dominant tier colors, filament matching, and joint planning
+│       ├── color_engine.py        # 64px tier quantization, filament matching, and joint planning
 │       ├── depth_mapper.py        # Two-tier height budget & solid pedestal enforcement
 │       ├── export_3mf.py          # OPC/3MF packaging & layer pause metadata generator
-│       ├── mesh_builder.py        # 2-manifold triangular mesh & binary STL generator
+│       ├── mesh_builder.py        # Terraced pixel mesh & binary STL generator
 │       ├── optical_model.py       # TD/XYZ simulation, CIEDE2000 mapping, schedule optimization
 │       ├── pipeline.py            # End-to-end CLI pipeline orchestrator
 │       ├── segment_cli.py         # Standalone segmentation & matte verification CLI

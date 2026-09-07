@@ -874,7 +874,7 @@
     "infill_shift_step": "0.4",
     "infill_wall_overlap": "0%",
     "inherits_group": [
-        "0.08mm Extra Fine @BBL X1C",
+        "",
         "",
         "Bambu PLA Matte @BBL X1C",
         "",
@@ -1226,7 +1226,6 @@
     "print_flow_ratio": "1",
     "print_in_clockwise": "0",
     "print_sequence": "by layer",
-    "print_settings_id": "Hueforge 2026",
     "printable_area": [
         "0x0",
         "256x0",

@@ -98,7 +98,24 @@ class BambuExporterTests(unittest.TestCase):
                     "Bambu Lab X1 Carbon 0.4 nozzle",
                 )
                 self.assertEqual(settings["filament_colour"], ["#000000", "#FF0000", "#FFFFFF"])
+                for key in (
+                    "filament_density",
+                    "filament_flow_ratio",
+                    "filament_max_volumetric_speed",
+                    "filament_retraction_length",
+                    "filament_start_gcode",
+                ):
+                    self.assertEqual(settings[key], [settings[key][0]] * 3)
                 self.assertEqual(settings["layer_height"], "0.1")
+                self.assertNotIn("print_settings_id", settings)
+                self.assertEqual(
+                    settings["default_print_profile"],
+                    "0.20mm Standard @BBL X1C",
+                )
+                self.assertEqual(
+                    settings["inherits_group"][0],
+                    "",
+                )
 
                 model_settings = ET.fromstring(archive.read("Metadata/model_settings.config"))
                 extruder = model_settings.find("./object/metadata[@key='extruder']")

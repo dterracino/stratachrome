@@ -211,13 +211,19 @@ def load_project_settings() -> dict[str, Any]:
         raise RuntimeError("Packaged Bambu project settings are not valid JSON.") from error
     if not isinstance(loaded, dict):
         raise RuntimeError("Packaged Bambu project settings must be a JSON object.")
+    # Process settings are embedded as ordinary project values, but the project
+    # must not claim or select a named print preset in the user's Bambu Studio.
+    loaded.pop("print_settings_id", None)
+    inherits_group = loaded.get("inherits_group")
+    if isinstance(inherits_group, list) and inherits_group:
+        inherits_group[0] = ""
     return loaded
 
 
-def _resize_values(values: Sequence[Any], count: int) -> list[Any]:
+def _repeat_first_value(values: Sequence[Any], count: int) -> list[Any]:
     if not values:
         return [""] * count
-    return [deepcopy(values[min(index, len(values) - 1)]) for index in range(count)]
+    return [deepcopy(values[0]) for _ in range(count)]
 
 
 def build_project_settings_config(
@@ -241,7 +247,7 @@ def build_project_settings_config(
                 source_count + 1,
             }
             if per_filament or inherited_filament:
-                settings[key] = _resize_values(value[:source_count], filament_count)
+                settings[key] = _repeat_first_value(value, filament_count)
 
     colors = [color for color, _ in filaments]
     settings.update(
