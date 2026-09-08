@@ -13,7 +13,7 @@ Stratachrome can process the full image as one relief or use **BiRefNet backgrou
 ## Key Features
 
 * **Selectable Relief Modes**: Use the full image as one lightweight tier or isolate foreground subjects with BiRefNet and stack optically mapped background and foreground reliefs.
-* **Selectable Mapping Modes**: Let optical color choose terminal relief layers, or fix tier-local $L^*$ geometry first and optimize movable filament boundaries inside each tier.
+* **Selectable Mapping Modes**: Let optical color choose terminal relief layers, fix equal-sized tier geometry first, or look ahead to divide one total layer budget between background and foreground before color allocation.
 * **Adaptive Tier Palettes**: Resizes each tier to a 64-pixel maximum edge with nearest-neighbor sampling, quantizes it to twice the requested filament cap, and selects up to the requested 2–8 colors from `FilamentCollections.BAMBU_PLA_BASICMATTE`. Filaments may be reused across tiers.
 * **Predictive Optical Modeling**: Uses each selected filament's measured color and TD value to simulate successive layers in linear CIE XYZ.
 * **Perceptual Color Precision**: Uses `color-match-tools` for image/filament CIELAB conversion, filament records and collections, and vectorized CIEDE2000 comparisons.
@@ -126,6 +126,12 @@ Fix geometry before allocating filament runs while retaining background and fore
 stratachrome -i assets/subject.png -o output/geometry-first.3mf --mapping-mode geometry-first
 ```
 
+Use optical look-ahead to divide 27 total layers between the two geometry-first tiers:
+
+```bash
+stratachrome -i assets/subject.png -o output/lookahead.3mf --mapping-mode lookahead --total-layers 27
+```
+
 For single-extruder printers requiring manual layer pause prompts:
 
 ```bash
@@ -164,10 +170,11 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--layer-height` | `0.10` | Standard vertical layer step height in millimeters. |
 | `--swap-mode` | `ams` | Filament change mode: `ams` for multi-material auto-switching, `manual` for single-extruder pause triggers. |
 | `--tier-mode` | `two` | `single` processes the full image without loading BiRefNet; `two` maps segmented background and foreground colors to stacked simulated optical states. |
-| `--mapping-mode` | `optical` | `optical` maps pixels to the closest simulated color states; `geometry-first` fixes tier-local $L^*$ geometry before optimizing color placement. |
+| `--mapping-mode` | `optical` | Mapping strategy: `optical`, `geometry-first`, or `lookahead`. |
 | `--device` | `auto` | Compute device for transformer inference (`cuda` or `cpu`). |
 | `--colors-per-tier` | `4` | Maximum filament count from 2 to 8 per tier. Each 64px nearest-neighbor tier image is quantized to twice this ceiling, providing extra matching candidates; duplicate matches can still collapse to fewer filaments and foreground selection prefers reusable background colors. |
-| `--max-layers-per-tier` | `120` | Layers available to each tier. Optical mode may use fewer; geometry-first uses exactly this count. |
+| `--max-layers-per-tier` | `120` | Per-tier layer budget. Optical may use fewer; geometry-first uses exactly this count; lookahead does not use it. |
+| `--total-layers` | `None` | Required by lookahead mode. Fixed layer total shared by both tiers, or used by the single tier. |
 | `--td-scale` | `1.0` | Positive multiplier for catalog TD values. Values above `1.0` model greater transparency and generally require more layers; values below `1.0` model greater opacity and generally require fewer layers. |
 | `--color-diagnostics` | `False` | Save `<output-stem>_color_preview.png` and `<output-stem>_delta_e_heatmap.png` beside the 3MF. |
 
@@ -178,6 +185,8 @@ The predicted-color preview shows the simulated optical state assigned to each p
 In `optical` mode, schedule optimization determines each tier's layer count and each pixel is mapped to the closest simulated CIELAB state. Color therefore influences both filament thickness and relief height.
 
 In `geometry-first` mode, each tier's local $L^*$ range is mapped onto exactly `--max-layers-per-tier` layers before palette or schedule optimization. Background and foreground are mapped independently and remain vertically stacked. The geometry-selected terminal layer for every pixel stays fixed while the optimizer shifts contiguous, lightness-ordered filament run boundaries up or down through the available tier layers to minimize CIEDE2000 error. This separates relief shape from color placement, but pixels ending at the same layer must share the same simulated color.
+
+In `lookahead` mode, `--total-layers` specifies one fixed layer count for the complete model. For two-tier output, Stratachrome first runs optical schedule planning to estimate the useful layer demand of the background and foreground. It fits those demands proportionally into the requested total, reports the resulting split, constructs each tier's local $L^*$ geometry with its allocation, and then performs geometry-first color placement independently inside both tiers. For single-tier output, lookahead and geometry-first are equivalent when given the same layer count.
 
 ### Understanding `--td-scale`
 

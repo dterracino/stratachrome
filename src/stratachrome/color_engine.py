@@ -54,6 +54,23 @@ class TierColorPlan:
     selection_score: float
 
 
+def allocate_lookahead_tier_layers(
+    total_layers: int,
+    background_demand: int,
+    foreground_demand: int,
+) -> tuple[int, int]:
+    """Fit optical tier demands proportionally into one fixed layer total."""
+    if total_layers < 2:
+        raise ValueError("Two-tier lookahead mode requires at least two total layers.")
+    if background_demand < 1 or foreground_demand < 1:
+        raise ValueError("Tier layer demands must be positive.")
+
+    demand_total = background_demand + foreground_demand
+    background_layers = round(total_layers * background_demand / demand_total)
+    background_layers = min(total_layers - 1, max(1, background_layers))
+    return background_layers, total_layers - background_layers
+
+
 def _quantized_tier_colors(
     image: Image.Image,
     matte: np.ndarray,

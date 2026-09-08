@@ -14,6 +14,7 @@ from color_tools import FilamentCollections
 import stratachrome.color_engine as color_engine
 from stratachrome.color_diagnostics import save_color_diagnostics
 from stratachrome.color_engine import (
+    allocate_lookahead_tier_layers,
     build_tier_image,
     extract_perceptual_lab,
     plan_geometry_first_tier_colors,
@@ -33,7 +34,7 @@ from stratachrome.depth_mapper import (
     SingleTierDepthMapper,
     TwoTierDepthMapper,
 )
-from stratachrome.pipeline import _filament_display_name
+from stratachrome.pipeline import _filament_display_name, _parse_arguments
 
 
 class ColorToolsIntegrationTests(unittest.TestCase):
@@ -58,6 +59,46 @@ class ColorToolsIntegrationTests(unittest.TestCase):
             _filament_display_name(sky_blue),
             "Bambu Lab PLA Matte Sky Blue",
         )
+
+    def test_lookahead_split_preserves_matching_optical_demand(self) -> None:
+        self.assertEqual(allocate_lookahead_tier_layers(27, 12, 15), (12, 15))
+
+    def test_lookahead_split_scales_demand_to_exact_total(self) -> None:
+        background, foreground = allocate_lookahead_tier_layers(27, 15, 17)
+
+        self.assertEqual((background, foreground), (13, 14))
+        self.assertEqual(background + foreground, 27)
+
+    def test_lookahead_cli_requires_total_layers(self) -> None:
+        with patch("sys.argv", ["stratachrome", "-i", "input.jpg", "--mapping-mode", "lookahead"]):
+            with self.assertRaises(SystemExit):
+                _parse_arguments()
+
+    def test_lookahead_cli_accepts_total_layers(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "stratachrome",
+                "-i",
+                "input.jpg",
+                "--mapping-mode",
+                "lookahead",
+                "--total-layers",
+                "27",
+            ],
+        ):
+            args = _parse_arguments()
+
+        self.assertEqual(args.mapping_mode, "lookahead")
+        self.assertEqual(args.total_layers, 27)
+
+    def test_total_layers_is_rejected_outside_lookahead_mode(self) -> None:
+        with patch(
+            "sys.argv",
+            ["stratachrome", "-i", "input.jpg", "--total-layers", "27"],
+        ):
+            with self.assertRaises(SystemExit):
+                _parse_arguments()
 
     def test_tier_masks_are_complementary(self) -> None:
         image = Image.new("RGB", (4, 2), (10, 20, 30))
