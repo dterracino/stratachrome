@@ -57,6 +57,7 @@ class OptimizedTierSchedule:
     states: tuple[LayerOpticalState, ...]
     layer_counts: tuple[int, ...]
     mean_delta_e: float
+    objective_score: float
 
 
 def _require_td(filament: FilamentRecord) -> float:
@@ -125,6 +126,7 @@ def simulate_tier_stack(
     step_height_mm: float = 0.10,
     first_layer_height_mm: float = 0.20,
     initial_substrate_lab: LabColor | None = None,
+    td_scale: float = 1.0,
 ) -> list[LayerOpticalState]:
     """Simulate a fixed bottom-to-top filament schedule in CIE XYZ and Lab."""
     sorted_assignments = tuple(sorted(assignments, key=lambda item: item.start_layer))
@@ -133,6 +135,8 @@ def simulate_tier_stack(
         raise ValueError("total_layers must be greater than zero.")
     if step_height_mm <= 0.0 or first_layer_height_mm <= 0.0:
         raise ValueError("Layer heights must be positive.")
+    if td_scale <= 0.0:
+        raise ValueError("td_scale must be positive.")
 
     if initial_substrate_lab is None:
         current_xyz = rgb_to_xyz(sorted_assignments[0].filament.rgb)
@@ -143,7 +147,10 @@ def simulate_tier_stack(
     for layer_idx in range(total_layers):
         thickness = first_layer_height_mm if layer_idx == 0 else step_height_mm
         filament = _resolve_active_filament(layer_idx, sorted_assignments)
-        transmittance = _calculate_transmittance(thickness, _require_td(filament))
+        transmittance = _calculate_transmittance(
+            thickness,
+            _require_td(filament) * td_scale,
+        )
         current_xyz = _blend_xyz(
             substrate=current_xyz,
             overlay=rgb_to_xyz(filament.rgb),
@@ -182,9 +189,10 @@ def _candidate_layer_limit(
     step_height_mm: float,
     terminal_transmittance: float,
     tier_layer_budget: int,
+    td_scale: float,
 ) -> int:
     """Bound search where the accumulated overlay is effectively opaque."""
-    td = _require_td(filament)
+    td = _require_td(filament) * td_scale
     optical_thickness = -td * math.log10(terminal_transmittance)
     return max(1, min(tier_layer_budget, math.ceil(optical_thickness / step_height_mm)))
 
@@ -195,16 +203,15 @@ def _minimum_layers_for_contribution(
     first_layer_height_mm: float,
     step_height_mm: float,
     minimum_color_contribution: float,
+    td_scale: float,
 ) -> int:
     """Return the layers needed for a filament to contribute visibly."""
-    required_thickness = -_require_td(filament) * math.log10(
-        1.0 - minimum_color_contribution
+    required_thickness = (
+        -_require_td(filament) * td_scale * math.log10(1.0 - minimum_color_contribution)
     )
     if required_thickness <= first_layer_height_mm:
         return 1
-    return 1 + math.ceil(
-        (required_thickness - first_layer_height_mm) / step_height_mm
-    )
+    return 1 + math.ceil((required_thickness - first_layer_height_mm) / step_height_mm)
 
 
 def _schedule_score(
@@ -218,6 +225,7 @@ def _schedule_score(
     initial_substrate_lab: LabColor | None,
     anchor_weight: float,
     layer_penalty: float,
+    td_scale: float,
 ) -> tuple[float, list[LayerOpticalState], float]:
     assignments = assignments_from_layer_counts(ordered, layer_counts)
     states = simulate_tier_stack(
@@ -226,6 +234,7 @@ def _schedule_score(
         step_height_mm=step_height_mm,
         first_layer_height_mm=first_layer_height_mm,
         initial_substrate_lab=initial_substrate_lab,
+        td_scale=td_scale,
     )
     state_lab = np.asarray([state.simulated_lab for state in states], dtype=np.float64)
     mean_delta_e = _mean_nearest_delta_e(target_lab, state_lab)
@@ -264,12 +273,15 @@ def _optimize_bounded_schedule(
     anchor_weight: float,
     layer_penalty: float,
     fit_tolerance: float,
-) -> tuple[list[int], list[LayerOpticalState], float]:
+    td_scale: float,
+) -> tuple[list[int], list[LayerOpticalState], float, float]:
     """Optimize color thicknesses without exceeding a total tier budget."""
     counts = list(minimum_counts)
     cache: dict[tuple[int, ...], tuple[float, list[LayerOpticalState], float]] = {}
 
-    def score(candidate_counts: Sequence[int]):
+    def score(
+        candidate_counts: Sequence[int],
+    ) -> tuple[float, list[LayerOpticalState], float]:
         key = tuple(candidate_counts)
         if key not in cache:
             cache[key] = _schedule_score(
@@ -282,6 +294,7 @@ def _optimize_bounded_schedule(
                 initial_substrate_lab=initial_substrate_lab,
                 anchor_weight=anchor_weight,
                 layer_penalty=layer_penalty,
+                td_scale=td_scale,
             )
         return cache[key]
 
@@ -327,7 +340,7 @@ def _optimize_bounded_schedule(
                 move_mean_delta_e = mean_delta_e
 
         if best_counts is None:
-            return counts, best_states, best_mean_delta_e
+            return counts, best_states, best_mean_delta_e, best_score
         counts = best_counts
         best_score = move_score
         best_states = move_states
@@ -343,11 +356,12 @@ def optimize_tier_schedule(
     initial_substrate_lab: LabColor | None = None,
     target_by_filament: Mapping[str, LabColor] | None = None,
     fit_tolerance: float = 0.02,
-    layer_penalty: float = 0.25,
+    layer_penalty: float = 1.0,
     minimum_color_contribution: float = 0.12,
     anchor_weight: float = 0.50,
     terminal_transmittance: float = 0.02,
     max_layers_per_tier: int = 120,
+    td_scale: float = 1.0,
 ) -> OptimizedTierSchedule:
     """Choose useful color thicknesses within a maximum tier layer budget.
 
@@ -373,6 +387,8 @@ def optimize_tier_schedule(
         raise ValueError("anchor_weight cannot be negative.")
     if max_layers_per_tier < 1:
         raise ValueError("max_layers_per_tier must be positive.")
+    if td_scale <= 0.0:
+        raise ValueError("td_scale must be positive.")
 
     if step_height_mm <= 0.0 or first_layer_height_mm <= 0.0:
         raise ValueError("Layer heights must be positive.")
@@ -387,6 +403,7 @@ def optimize_tier_schedule(
             first_layer_height_mm=first_thickness,
             step_height_mm=step_height_mm,
             minimum_color_contribution=minimum_color_contribution,
+            td_scale=td_scale,
         )
         for filament, first_thickness in zip(ordered, first_thicknesses)
     ]
@@ -405,11 +422,12 @@ def optimize_tier_schedule(
             step_height_mm,
             terminal_transmittance,
             max_layers_per_tier,
+            td_scale,
         )
         for filament in ordered
     ]
     anchors = dict(target_by_filament or {})
-    layer_counts, states, mean_delta_e = _optimize_bounded_schedule(
+    layer_counts, states, mean_delta_e, objective_score = _optimize_bounded_schedule(
         ordered,
         minimum_counts,
         maximum_counts,
@@ -422,6 +440,7 @@ def optimize_tier_schedule(
         anchor_weight=anchor_weight,
         layer_penalty=layer_penalty,
         fit_tolerance=fit_tolerance,
+        td_scale=td_scale,
     )
     assignments = assignments_from_layer_counts(ordered, layer_counts)
     return OptimizedTierSchedule(
@@ -429,6 +448,7 @@ def optimize_tier_schedule(
         states=tuple(states),
         layer_counts=tuple(layer_counts),
         mean_delta_e=round(mean_delta_e, 4),
+        objective_score=round(objective_score, 4),
     )
 
 

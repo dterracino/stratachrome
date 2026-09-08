@@ -23,7 +23,7 @@ from stratachrome.optical_model import (
     optimize_tier_schedule,
     simulate_tier_stack,
 )
-from stratachrome.depth_mapper import TwoTierDepthMapper
+from stratachrome.depth_mapper import SingleTierDepthMapper, TwoTierDepthMapper
 from stratachrome.pipeline import _filament_display_name
 
 
@@ -208,10 +208,32 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         self.assertEqual(schedule.assignments[0].filament.id, black.id)
         self.assertEqual(len(schedule.states), sum(schedule.layer_counts))
         self.assertGreaterEqual(schedule.layer_counts[1], 4)
-        self.assertLessEqual(sum(schedule.layer_counts), 20)
+        self.assertLess(sum(schedule.layer_counts), 20)
         self.assertAlmostEqual(
             schedule.states[-1].height_mm,
             0.2 + 0.1 * (len(schedule.states) - 1),
+        )
+
+    def test_td_scale_controls_optical_transition_thickness(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        targets = np.asarray([black.lab, white.lab], dtype=np.float64)
+
+        catalog_schedule = optimize_tier_schedule(
+            (black, white),
+            targets,
+            max_layers_per_tier=20,
+        )
+        frontlit_schedule = optimize_tier_schedule(
+            (black, white),
+            targets,
+            max_layers_per_tier=20,
+            td_scale=0.1,
+        )
+
+        self.assertLess(
+            sum(frontlit_schedule.layer_counts),
+            sum(catalog_schedule.layer_counts),
         )
 
     def test_tier_budget_rejects_td_minimums_that_do_not_fit(self) -> None:
@@ -302,9 +324,7 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         mapper = ColorLayerMapper(states)
 
         black_layer = int(
-            mapper.map_image_lab_to_layers(
-                np.asarray([[black.lab]], dtype=np.float64)
-            )[0, 0]
+            mapper.map_image_lab_to_layers(np.asarray([[black.lab]], dtype=np.float64))[0, 0]
         )
 
         self.assertLess(black_layer, assignments[1].start_layer)
@@ -314,18 +334,42 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         white = self._filament("Jade White")
         assignments = assignments_from_layer_counts((black, white), (1, 1))
         states = simulate_tier_stack(assignments, total_layers=2)
-        mapper = ColorLayerMapper(states)
         lab_image = np.asarray([[states[0].simulated_lab, states[1].simulated_lab]])
-        matte = np.zeros((1, 2), dtype=np.float32)
-        depth_mapper = TwoTierDepthMapper(mapper, mapper, states, states)
+        matte = np.asarray([[0.0, 1.0]], dtype=np.float32)
+        depth_mapper = TwoTierDepthMapper(states, states)
 
         result = depth_mapper.generate_heightmap(lab_image, lab_image, matte)
 
         self.assertEqual(len(result.swap_schedule), 4)
+        self.assertEqual(result.z_grid[0, 0], result.bg_surface_z[0, 0])
+        self.assertEqual(result.z_grid[0, 1], result.fg_surface_z[0, 1])
+        np.testing.assert_allclose(
+            (result.z_grid - 0.2) / 0.1,
+            np.rint((result.z_grid - 0.2) / 0.1),
+            atol=1e-5,
+        )
         self.assertTrue(
             all(swap.filament_name.startswith("Bambu Lab ") for swap in result.swap_schedule)
         )
         self.assertTrue(all(swap.filament_hex.startswith("#") for swap in result.swap_schedule))
+
+    def test_single_tier_depth_maps_lightness_monotonically_to_layer_grid(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        states = simulate_tier_stack(
+            assignments_from_layer_counts((black, white), (1, 3)),
+            total_layers=4,
+        )
+        lab_image = np.asarray(
+            [[[10.0, 80.0, 70.0], [50.0, -80.0, -70.0], [90.0, 0.0, 0.0]]],
+            dtype=np.float64,
+        )
+
+        result = SingleTierDepthMapper(states).generate_heightmap(lab_image)
+
+        np.testing.assert_allclose(result.z_grid, [[0.2, 0.4, 0.5]])
+        self.assertEqual(result.total_layers, 4)
+        self.assertEqual({swap.tier_name for swap in result.swap_schedule}, {"single"})
 
     def test_lab_sampling_is_tier_specific_and_bounded(self) -> None:
         image = Image.new("RGB", (20, 10), (120, 30, 200))

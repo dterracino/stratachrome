@@ -79,7 +79,9 @@ class BambuExporterTests(unittest.TestCase):
                 self.assertEqual(transform[9:11], [128.0, 128.0])
                 component = master.find(".//m:component", namespace)
                 self.assertEqual(component.get("objectid"), "1")
-                self.assertEqual(component.get(f"{{{NS_PRODUCTION}}}path"), "/3D/Objects/object_1.model")
+                self.assertEqual(
+                    component.get(f"{{{NS_PRODUCTION}}}path"), "/3D/Objects/object_1.model"
+                )
                 self.assertIn(
                     f'xmlns:BambuStudio="{NS_BAMBU}"',
                     archive.read("3D/3dmodel.model").decode("utf-8"),
@@ -131,8 +133,47 @@ class BambuExporterTests(unittest.TestCase):
             layers = custom.findall("./plate/layer")
             self.assertEqual(len(layers), 3)
             self.assertEqual([layer.get("extruder") for layer in layers], ["2", "3", "2"])
-            self.assertEqual([layer.get("top_z") for layer in layers], ["0.400000", "0.600000", "0.800000"])
+            self.assertEqual(
+                [layer.get("top_z") for layer in layers], ["0.400000", "0.600000", "0.800000"]
+            )
             self.assertTrue(all(layer.get("gcode") == "tool_change" for layer in layers))
+
+    def test_export_preserves_basic_and_matte_filament_profiles(self) -> None:
+        swaps = [
+            SwapEvent(
+                0,
+                0.2,
+                "Bambu Lab PLA Basic Black",
+                "#000000",
+                "single",
+                filament_finish="Basic",
+                filament_id="bambu-lab-pla-basic-black",
+            ),
+            SwapEvent(
+                3,
+                0.4,
+                "Bambu Lab PLA Matte Caramel",
+                "#AE835B",
+                "single",
+                filament_finish="Matte",
+                filament_id="bambu-lab-pla-matte-caramel",
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "profiles.3mf"
+            export_bambu_project(self.mesh, swaps, output)
+            with zipfile.ZipFile(output) as archive:
+                settings = json.loads(archive.read("Metadata/project_settings.config"))
+
+        self.assertEqual(
+            settings["filament_settings_id"],
+            ["Bambu PLA Basic @BBL X1C", "Bambu PLA Matte @BBL X1C"],
+        )
+        self.assertEqual(settings["filament_ids"], ["GFA00", "GFA01"])
+        self.assertEqual(settings["filament_density"], ["1.26", "1.32"])
+        self.assertEqual(settings["filament_flow_ratio"], ["0.98", "0.98"])
+        self.assertEqual(settings["filament_max_volumetric_speed"], ["21", "22"])
 
     def test_legacy_public_exporter_delegates_to_native_bambu_writer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1,29 +1,30 @@
 # Stratachrome
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 **Stratachrome** is an automated multi-color 3D relief printing pipeline designed for standard single-extruder FDM 3D printers and multi-material systems (Bambu Lab AMS, Orca Slicer).
 
-By coupling **BiRefNet bilateral background segmentation** with TD-driven optical modeling and **CIELAB/CIEDE2000** color matching, Stratachrome decomposes a 2D image into an intelligent two-tier physical relief print. It selects real Bambu Lab PLA Basic/Matte filaments independently for each tier, derives the useful layer count from perceptual fit, and packages a closed terraced mesh inside a ready-to-slice Bambu/Orca 3MF container.
+Stratachrome can process the full image as one relief or use **BiRefNet background segmentation** to create independently normalized background and foreground tiers. It selects real Bambu Lab PLA Basic/Matte filaments, derives useful transition thickness from TD-driven optical modeling, maps tier-local CIELAB $L^*$ to printable elevations, and packages a closed terraced mesh inside a ready-to-slice Bambu/Orca 3MF container.
 
 ---
 
 ## Key Features
 
-* **Intelligent Two-Tier Geometry**: Automatically isolates foreground subjects from background scenes using BiRefNet, creating a dedicated height budget for both and preventing color transmission bleed-through.
+* **Selectable Relief Modes**: Use the full image as one lightweight tier or isolate foreground subjects with BiRefNet and stack independently normalized background and foreground reliefs.
 * **Adaptive Tier Palettes**: Resizes each tier to a 64-pixel maximum edge with nearest-neighbor sampling, quantizes it to twice the requested filament cap, and selects up to the requested 2–8 colors from `FilamentCollections.BAMBU_PLA_BASICMATTE`. Filaments may be reused across tiers.
 * **Predictive Optical Modeling**: Uses each selected filament's measured color and TD value to simulate successive layers in linear CIE XYZ.
 * **Perceptual Color Precision**: Uses `color-match-tools` for image/filament CIELAB conversion, filament records and collections, and vectorized CIEDE2000 comparisons.
-* **Information-Driven Thickness**: Optimizes layer schedules by balancing reconstruction error against the diminishing perceptual value of each additional layer. Thickness is an output, not a preset target.
+* **Information-Driven Thickness**: Optimizes layer schedules by balancing reconstruction error against the diminishing perceptual value of each additional layer, and removes selected filaments that worsen the complete stack objective.
+* **Lightness-Driven Relief**: Maps each tier's local $L^*$ range monotonically onto its available layer heights while optical simulation determines filament transitions separately.
 * **Calibrated Layer Alignment**: Built with a dedicated 0.20 mm first-layer base for reliable bed adhesion and 0.10 mm layer increments matching standard slicer toolpaths.
 * **Flexible Swap Modes**: Supports automated multi-material hardware changers (`--swap-mode ams`) or single-extruder pause triggers (`--swap-mode manual`).
 * **Auto-Scaling Aspect Ratios**: Specify target maximum dimension in millimeters (`--size`); landscape and portrait images automatically scale to fit within your build plate envelope.
 * **Slicer-Optimized Grid Resolution**: Built around standard 0.42 mm nozzle line widths and Arachne dynamic extrusion parameters, sampling up to 1000 px resolution for Nyquist fidelity without slicing lag or mesh bloat.
-* **Flat Pixel Terraces**: Gives every resampled image pixel a horizontal plateau at its selected layer. Microscopic transition strips join neighboring plateaus without visible color bands, open edges, or non-manifold T-junctions.
-* **2D Coplanar Reduction**: Merges connected same-height pixel plateaus into boundary-only triangulations, removing their interior pixel edges while preserving transition topology.
-* **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives featuring decomposed model components (`3D/Objects/object_1.model`) and optional layer pause markers (`Metadata/custom_gcode_per_layer.xml`).
+* **Flat Pixel Terraces**: Gives every resampled image pixel a horizontal plateau at its selected layer and joins neighboring elevations with true vertical walls.
+* **3D Coplanar Reduction**: Merges connected pixel faces across X, Y, and consecutive Z layers into boundary-only triangulations. Uniform stacked regions become single cuboid shells while exact heights and manifold transition junctions are preserved.
+* **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives with layer changes and finish-aware Bambu PLA Basic/Matte X1C profiles.
 
 ---
 
@@ -44,10 +45,10 @@ Input Image
 [Filament Search] ─────────► Bambu PLA Basic/Matte Candidates
          │
          ▼
-[Schedule Optimization] ───► TD/XYZ Layer Curves + CIEDE2000 Lookup
+[Schedule Optimization] ───► Useful TD/XYZ Transition Schedule
          │
          ▼
-[Two-Tier Depth Mapper] ───► Solid Pedestal Elevation + Anti-Sheer Blend
+[L* Depth Mapper] ─────────► Single Relief or Discrete Two-Tier Pedestal
          │
          ▼
 [Watertight Mesh Builder] ─► 2-Manifold Triangular Mesh
@@ -109,6 +110,12 @@ Convert an image into a ready-to-print 3MF file using an AMS multi-material prin
 stratachrome -i assets/subject.png -o output/relief_project.3mf -s 150.0 --swap-mode ams
 ```
 
+Skip foreground extraction and process the full image as one tier:
+
+```bash
+stratachrome -i assets/subject.png -o output/single.3mf --tier-mode single
+```
+
 For single-extruder printers requiring manual layer pause prompts:
 
 ```bash
@@ -146,9 +153,11 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--first-layer` | `0.20` | First layer bed-contact height in millimeters. |
 | `--layer-height` | `0.10` | Standard vertical layer step height in millimeters. |
 | `--swap-mode` | `ams` | Filament change mode: `ams` for multi-material auto-switching, `manual` for single-extruder pause triggers. |
+| `--tier-mode` | `two` | `single` processes the full image without loading BiRefNet; `two` stacks independently normalized background and foreground tiers. |
 | `--device` | `auto` | Compute device for transformer inference (`cuda` or `cpu`). |
 | `--colors-per-tier` | `4` | Maximum filament count from 2 to 8 per tier. Each 64px nearest-neighbor tier image is quantized to twice this ceiling, providing extra matching candidates; duplicate matches can still collapse to fewer filaments and foreground selection prefers reusable background colors. |
 | `--max-layers-per-tier` | `120` | Maximum total layers available to each tier. TD and perceptual fit determine how many layers are actually used. |
+| `--td-scale` | `1.0` | Experimental multiplier for catalog TD values. Use calibration prints before changing this value for production output. |
 
 ### `stratachrome-segment`
 

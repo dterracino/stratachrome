@@ -1,20 +1,19 @@
 """
 depth_mapper.py
 ---------------
-Transforms zone-separated lightness arrays into physical millimeter heights
-using two-tier stacking. Enforces the background ceiling as a solid pedestal
-beneath the foreground and provides smooth, anti-sheer boundary blending.
-Incorporates a dedicated first layer height (default 0.20mm) into base tier geometry.
+Transforms CIELAB lightness arrays into discrete physical elevations for single-
+or two-tier reliefs. Two-tier mode places a solid background pedestal beneath
+the foreground. A dedicated first-layer height is included in base geometry.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, cast
+from typing import cast
 
 import numpy as np
 
-from stratachrome.optical_model import ColorLayerMapper, LayerOpticalState
+from stratachrome.optical_model import LayerOpticalState
 
 
 @dataclass(frozen=True)
@@ -75,6 +74,9 @@ class SwapEvent:
     filament_name: str
     filament_hex: str
     tier_name: str
+    filament_type: str = "PLA"
+    filament_finish: str = "Basic"
+    filament_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -128,29 +130,34 @@ def _build_tier_height_array(
     return heights
 
 
-def _map_zone_to_elevations(
+def _map_lightness_to_elevations(
     target_lab: np.ndarray,
-    mapper: ColorLayerMapper,
     height_lut: np.ndarray,
+    mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Map a Lab image to discrete millimeter elevations using a height LUT."""
-    layer_indices = mapper.map_image_lab_to_layers(target_lab)
-    clamped_indices = np.clip(layer_indices, 0, len(height_lut) - 1)
-    return cast(np.ndarray, height_lut[clamped_indices])
+    """Map tier-local CIELAB L* values to discrete printable elevations."""
+    lightness = np.asarray(target_lab[..., 0], dtype=np.float32)
+    samples = lightness if mask is None else lightness[mask]
+    if samples.size == 0:
+        raise ValueError("Cannot map lightness for an empty tier.")
+
+    minimum = float(np.min(samples))
+    maximum = float(np.max(samples))
+    if maximum <= minimum:
+        layer_indices = np.zeros(lightness.shape, dtype=np.int32)
+    else:
+        normalized = np.clip((lightness - minimum) / (maximum - minimum), 0.0, 1.0)
+        layer_indices = np.rint(normalized * (len(height_lut) - 1)).astype(np.int32)
+    return cast(np.ndarray, height_lut[layer_indices])
 
 
-def _blend_boundaries(
+def _select_tier_surfaces(
     bg_z: np.ndarray,
     fg_z: np.ndarray,
     matte: np.ndarray,
 ) -> np.ndarray:
-    """Combines background and foreground surfaces using soft matte blending.
-
-    Formula: Z(x, y) = (1 - M) * Z_bg + M * Z_fg
-    """
-    clamped_matte = np.clip(matte, 0.0, 1.0).astype(np.float32)
-    blended = (1.0 - clamped_matte) * bg_z + clamped_matte * fg_z
-    return cast(np.ndarray, blended.astype(np.float32))
+    """Select one tier per pixel without creating off-grid elevations."""
+    return cast(np.ndarray, np.where(matte >= 0.5, fg_z, bg_z).astype(np.float32))
 
 
 def _extract_tier_swaps(
@@ -173,28 +180,29 @@ def _extract_tier_swaps(
                 SwapEvent(
                     global_layer_idx=global_idx,
                     z_height_mm=round(z_pos, 4),
-                    filament_name=f"{fil.maker} {fil.color}",
+                    filament_name=" ".join(
+                        part for part in (fil.maker, fil.type, fil.finish, fil.color) if part
+                    ),
                     filament_hex=fil.hex,
                     tier_name=tier_name,
+                    filament_type=fil.type,
+                    filament_finish=fil.finish,
+                    filament_id=fil.id,
                 )
             )
     return swaps
 
 
 class TwoTierDepthMapper:
-    """Coordinates height generation, stacking, and swap scheduling for 2-tier models."""
+    """Coordinate lightness mapping, stacking, and swaps for two-tier models."""
 
     def __init__(
         self,
-        bg_mapper: ColorLayerMapper,
-        fg_mapper: ColorLayerMapper,
         bg_states: list[LayerOpticalState],
         fg_states: list[LayerOpticalState],
         step_height_mm: float = 0.10,
         first_layer_height_mm: float = 0.20,
     ) -> None:
-        self._bg_mapper = bg_mapper
-        self._fg_mapper = fg_mapper
         self._bg_states = bg_states
         self._fg_states = fg_states
         self._step_height_mm = step_height_mm
@@ -243,12 +251,21 @@ class TwoTierDepthMapper:
         """
         _validate_image_dimensions(bg_lab, fg_lab, matte)
 
-        # 1. Map zone lightness to physical elevations
-        bg_z = _map_zone_to_elevations(bg_lab, self._bg_mapper, self._bg_height_lut)
-        fg_z = _map_zone_to_elevations(fg_lab, self._fg_mapper, self._fg_height_lut)
+        # 1. Map each tier's own lightness range to physical elevations.
+        foreground_mask = matte >= 0.5
+        bg_z = _map_lightness_to_elevations(
+            bg_lab,
+            self._bg_height_lut,
+            ~foreground_mask,
+        )
+        fg_z = _map_lightness_to_elevations(
+            fg_lab,
+            self._fg_height_lut,
+            foreground_mask,
+        )
 
-        # 2. Smoothly blend across feathered boundaries
-        z_grid = _blend_boundaries(bg_z, fg_z, matte)
+        # 2. Select tiers discretely so all surfaces remain on slicer layers.
+        z_grid = _select_tier_surfaces(bg_z, fg_z, matte)
 
         # 3. Assemble swap schedules
         bg_swaps = _extract_tier_swaps(
@@ -275,4 +292,47 @@ class TwoTierDepthMapper:
             total_layers=total_layers,
             max_height_mm=round(max_height, 4),
             swap_schedule=full_schedule,
+        )
+
+
+class SingleTierDepthMapper:
+    """Generate one lightness-driven relief and its filament schedule."""
+
+    def __init__(
+        self,
+        states: list[LayerOpticalState],
+        step_height_mm: float = 0.10,
+        first_layer_height_mm: float = 0.20,
+    ) -> None:
+        self._states = states
+        self._budget = TierHeightBudget(
+            layer_count=len(states),
+            step_height_mm=step_height_mm,
+            first_layer_height_mm=first_layer_height_mm,
+        )
+        self._height_lut = _build_tier_height_array(self._budget, is_base_tier=True)
+
+    @property
+    def budget(self) -> TierHeightBudget:
+        return self._budget
+
+    def generate_heightmap(self, lab_image: np.ndarray) -> HeightmapResult:
+        """Map the full image L* range onto one discrete tier."""
+        if lab_image.ndim != 3 or lab_image.shape[-1] != 3:
+            raise ValueError("lab_image must have shape (height, width, 3).")
+
+        z_grid = _map_lightness_to_elevations(lab_image, self._height_lut)
+        swaps = _extract_tier_swaps(
+            self._states,
+            layer_offset=0,
+            tier_name="single",
+            height_lut=self._height_lut,
+        )
+        return HeightmapResult(
+            z_grid=z_grid,
+            bg_surface_z=z_grid,
+            fg_surface_z=z_grid,
+            total_layers=self._budget.layer_count,
+            max_height_mm=round(float(np.max(z_grid)), 4),
+            swap_schedule=swaps,
         )

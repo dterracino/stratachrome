@@ -1,13 +1,14 @@
 """
 stratachrome
 ------------
-Two-tier automated multi-color 3D relief generator.
-Models Beer-Lambert optical transmission, isolates foreground/background
-via BiRefNet, builds watertight manifold triangle meshes, and exports
-native Bambu/Orca .3mf project containers.
+Single- or two-tier automated multi-color 3D relief generator.
+Models Beer-Lambert optical transmission, optionally isolates foreground and
+background via BiRefNet, builds watertight meshes, and exports Bambu/Orca 3MF.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from stratachrome.color_engine import (
     FilamentMatch,
@@ -22,6 +23,7 @@ from stratachrome.color_engine import (
 )
 from stratachrome.depth_mapper import (
     HeightmapResult,
+    SingleTierDepthMapper,
     SwapEvent,
     TierHeightBudget,
     TwoTierDepthMapper,
@@ -42,14 +44,24 @@ from stratachrome.optical_model import (
     optimize_tier_schedule,
     simulate_tier_stack,
 )
-from stratachrome.segmentation import (
-    ForegroundSegmenter,
-    SegmentationConfig,
-    SegmentationResult,
-    partition_lightness_channels,
-)
 
 __version__ = "0.1.0"
+
+_SEGMENTATION_EXPORTS = {
+    "ForegroundSegmenter",
+    "SegmentationConfig",
+    "SegmentationResult",
+    "partition_lightness_channels",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _SEGMENTATION_EXPORTS:
+        from stratachrome import segmentation
+
+        return getattr(segmentation, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Optical & Color
@@ -78,6 +90,7 @@ __all__ = [
     "TierHeightBudget",
     "SwapEvent",
     "HeightmapResult",
+    "SingleTierDepthMapper",
     "TwoTierDepthMapper",
     # Geometry & Mesh
     "PhysicalDimensions",

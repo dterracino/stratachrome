@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 from stratachrome.depth_mapper import SwapEvent
 from stratachrome.mesh_builder import TriangleMesh
 
-
 NS_3MF = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 NS_PRODUCTION = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06"
 NS_BAMBU = "http://schemas.bambulab.com/package/2021"
@@ -39,7 +38,7 @@ def build_content_types_xml() -> str:
         ' <Default Extension="model" '
         'ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n'
         ' <Default Extension="gcode" ContentType="text/x.gcode"/>\n'
-        '</Types>\n'
+        "</Types>\n"
     )
 
 
@@ -49,7 +48,7 @@ def _build_relationships_xml(target: str) -> str:
         f'<Relationships xmlns="{NS_RELS}">\n'
         f' <Relationship Target="{target}" Id="rel-1" '
         'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n'
-        '</Relationships>\n'
+        "</Relationships>\n"
     )
 
 
@@ -167,12 +166,14 @@ def filament_key(swap: SwapEvent) -> tuple[str, str]:
     return swap.filament_hex.upper(), swap.filament_name
 
 
-def ordered_filaments(swap_schedule: Sequence[SwapEvent]) -> list[tuple[str, str]]:
-    ordered: list[tuple[str, str]] = []
+def ordered_filaments(swap_schedule: Sequence[SwapEvent]) -> list[SwapEvent]:
+    ordered: list[SwapEvent] = []
+    seen: set[tuple[str, str]] = set()
     for swap in swap_schedule:
         key = filament_key(swap)
-        if key not in ordered:
-            ordered.append(key)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(swap)
     if not ordered:
         raise ValueError("The swap schedule must contain at least the base filament.")
     return ordered
@@ -201,9 +202,7 @@ def plate_center_from_settings(settings: Mapping[str, Any]) -> tuple[float, floa
 def load_project_settings() -> dict[str, Any]:
     """Load Stratachrome's packaged X1 Carbon 0.4 mm project defaults."""
     resource = (
-        files("stratachrome")
-        .joinpath("resources")
-        .joinpath("bambu_x1c_0.4_project_settings.json")
+        files("stratachrome").joinpath("resources").joinpath("bambu_x1c_0.4_project_settings.json")
     )
     try:
         loaded = json.loads(resource.read_text(encoding="utf-8"))
@@ -224,6 +223,29 @@ def _repeat_first_value(values: Sequence[Any], count: int) -> list[Any]:
     if not values:
         return [""] * count
     return [deepcopy(values[0]) for _ in range(count)]
+
+
+def _bambu_filament_profile(filament: SwapEvent) -> dict[str, str]:
+    """Return official X1C profile values for supported Bambu PLA finishes."""
+    if filament.filament_finish.strip().casefold() == "matte":
+        return {
+            "filament_settings_id": "Bambu PLA Matte @BBL X1C",
+            "filament_ids": "GFA01",
+            "filament_density": "1.32",
+            "filament_flow_ratio": "0.98",
+            "filament_max_volumetric_speed": "22",
+            "filament_scarf_height": "5%",
+            "impact_strength_z": "6.6",
+        }
+    return {
+        "filament_settings_id": "Bambu PLA Basic @BBL X1C",
+        "filament_ids": "GFA00",
+        "filament_density": "1.26",
+        "filament_flow_ratio": "0.98",
+        "filament_max_volumetric_speed": "21",
+        "filament_scarf_height": "0%",
+        "impact_strength_z": "13.8",
+    }
 
 
 def build_project_settings_config(
@@ -249,7 +271,8 @@ def build_project_settings_config(
             if per_filament or inherited_filament:
                 settings[key] = _repeat_first_value(value, filament_count)
 
-    colors = [color for color, _ in filaments]
+    colors = [filament.filament_hex.upper() for filament in filaments]
+    profiles = [_bambu_filament_profile(filament) for filament in filaments]
     settings.update(
         {
             "version": str(settings.get("version", BAMBU_VERSION)),
@@ -258,10 +281,10 @@ def build_project_settings_config(
             "filament_colour": colors,
             "filament_multi_colour": colors,
             "default_filament_colour": [""] * filament_count,
-            "filament_type": ["PLA"] * filament_count,
+            "filament_type": [filament.filament_type for filament in filaments],
             "filament_vendor": ["Bambu Lab"] * filament_count,
-            "filament_settings_id": ["Bambu PLA Basic @BBL X1C"] * filament_count,
-            "filament_ids": [""] * filament_count,
+            "filament_settings_id": [profile["filament_settings_id"] for profile in profiles],
+            "filament_ids": [profile["filament_ids"] for profile in profiles],
             "filament_is_support": ["0"] * filament_count,
             "filament_soluble": ["0"] * filament_count,
             "filament_map": ["1"] * filament_count,
@@ -269,6 +292,14 @@ def build_project_settings_config(
             "single_extruder_multi_material": "1",
         }
     )
+    for profile_key in (
+        "filament_density",
+        "filament_flow_ratio",
+        "filament_max_volumetric_speed",
+        "filament_scarf_height",
+        "impact_strength_z",
+    ):
+        settings[profile_key] = [profile[profile_key] for profile in profiles]
 
     settings["flush_volumes_matrix"] = [
         "0" if source == target else "280"
@@ -288,7 +319,9 @@ def build_custom_gcode_xml(
     ET.SubElement(plate, "plate_info", id="1")
 
     filaments = ordered_filaments(swap_schedule)
-    slot_by_filament = {key: index + 1 for index, key in enumerate(filaments)}
+    slot_by_filament = {
+        filament_key(filament): index + 1 for index, filament in enumerate(filaments)
+    }
     active = filament_key(swap_schedule[0])
     for swap in swap_schedule[1:]:
         incoming = filament_key(swap)
