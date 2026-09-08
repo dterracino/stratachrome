@@ -143,7 +143,7 @@ stratachrome assets/subject.png -o output/relief_project.3mf -s 200.0 --swap-mod
 Isolate foreground and background components and inspect edge-feathering previews:
 
 ```bash
-stratachrome-segment assets/subject.png -o output/segmentation/ --save-matte --save-quantized --save-colormaps --feather 2
+stratachrome-segment assets/subject.png -o output/segmentation/ --save-matte --save-quantized --save-colormaps --save-histograms --feather 2
 ```
 
 ### 3. Mesh Verification Export (Binary STL)
@@ -176,17 +176,19 @@ stratachrome-mesh assets/subject.png -o output/test_mesh.stl -s 200.0 --max-heig
 | `--max-layers-per-tier` | `20` | Per-tier layer budget. Optical may use fewer; geometry-first uses exactly this count; lookahead does not use it. |
 | `--total-layers` | `27` | Fixed layer total used by lookahead mode and ignored by optical and geometry-first modes. |
 | `--td-scale` | `1.0` | Positive multiplier for catalog TD values. Values above `1.0` model greater transparency and generally require more layers; values below `1.0` model greater opacity and generally require fewer layers. |
-| `--color-diagnostics` | `False` | Save `<output-stem>_color_preview.png` and `<output-stem>_delta_e_heatmap.png` beside the 3MF. |
+| `--color-diagnostics` | `False` | Save the predicted-color preview, Delta E heatmap, 64px source and predicted-color images, and source and predicted-color RGB histograms beside the 3MF. |
 
 When `--output` is omitted, the 3MF and any color diagnostics are written to the `output` directory using the input stem. A directory passed to `--output` receives all generated files. A bare filename such as `custom.3mf` is written beside the input image, while a filename with an explicit directory is used as given.
 
-The predicted-color preview shows the simulated optical state assigned to each pixel. The heatmap compares that state with the source using CIEDE2000: black indicates zero error, progressing through blue, cyan, and yellow to red at Delta E 30 or greater. The fixed scale allows direct comparison between different palettes and schedules.
+The predicted-color preview shows the simulated optical state assigned to each pixel. The heatmap compares that state with the source using CIEDE2000: black indicates zero error, progressing through blue, cyan, and yellow to red at Delta E 30 or greater. The fixed scale allows direct comparison between different palettes and schedules. The `<output-stem>_source_64px.png` and `<output-stem>_color_preview_64px.png` files provide nearest-neighbor source and simulated previews with a 64px maximum edge. The corresponding `_histogram.png` files show separate red, green, and blue channel distributions.
 
 ### Mapping Modes
 
 In `optical` mode, schedule optimization determines each tier's layer count and each pixel is mapped to the closest simulated CIELAB state. Color therefore influences both filament thickness and relief height.
 
 In `geometry-first` mode, each tier's local $L^*$ range is mapped onto exactly `--max-layers-per-tier` layers before palette or schedule optimization. Background and foreground are mapped independently and remain vertically stacked. The geometry-selected terminal layer for every pixel stays fixed while the optimizer shifts contiguous, lightness-ordered filament run boundaries up or down through the available tier layers to minimize CIEDE2000 error. This separates relief shape from color placement, but pixels ending at the same layer must share the same simulated color.
+
+After palette selection, Stratachrome warns when two retained colors sampled from a tier's 64px image have $L^*$ values that round to the same height layer within that tier's actual source-lightness range and final layer count. Each warning reports both sampled RGB and $L^*$ values, their matched filaments, and the shared layer. These warnings explain likely height collisions without changing palette selection or geometry.
 
 In `lookahead` mode, `--total-layers` specifies one fixed layer count for the complete model and defaults to 27. For dual-tier output, Stratachrome first runs optical schedule planning to estimate the useful layer demand of the background and foreground. It fits those demands proportionally into the requested total, reports the resulting split, constructs each tier's local $L^*$ geometry with its allocation, and then performs geometry-first color placement independently inside both tiers. For single-tier output, lookahead and geometry-first are equivalent when given the same layer count.
 
@@ -229,6 +231,7 @@ Start with `1.0`. If printed upper colors hide lower colors faster than predicte
 | `--save-matte` | `False` | Also exports the raw single-channel grayscale alpha matte. |
 | `--save-quantized` | `False` | Save each full-resolution tier quantized to twice the filament cap learned from its 64px colormap. |
 | `--save-colormaps` | `False` | Save each tier resized with nearest-neighbor sampling to a 64px maximum edge. |
+| `--save-histograms` | `False` | Save RGB histograms for each full-color tier and, when `--save-quantized` is active, each quantized tier. |
 
 ### `stratachrome-mesh`
 
@@ -241,7 +244,7 @@ Start with `1.0`. If printed upper colors hide lower colors faster than predicte
 | `--first-layer` | `0.20` | First layer bed-contact height in millimeters. |
 | `--max-dim` | `1000` | Maximum pixel edge used to rasterize the mesh height grid. |
 
-The mesh CLI follows the same output path rules as the main CLI. Segmentation always treats `--output` as a directory and writes `<input-stem>_background.png` and `<input-stem>_foreground.png` there. Optional outputs use `<input-stem>_matte.png`, `<input-stem>_<tier>_colormap.png`, and `<input-stem>_<tier>_quantized.png`.
+The mesh CLI follows the same output path rules as the main CLI. Segmentation always treats `--output` as a directory and writes `<input-stem>_background.png` and `<input-stem>_foreground.png` there. Optional outputs use `<input-stem>_matte.png`, `<input-stem>_<tier>_colormap.png`, `<input-stem>_<tier>_quantized.png`, `<input-stem>_<tier>_histogram.png`, and `<input-stem>_<tier>_quantized_histogram.png`.
 
 ---
 

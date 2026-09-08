@@ -23,6 +23,7 @@ import torch
 from stratachrome.cli_defaults import DEFAULT_COLORS_PER_TIER
 from stratachrome.cli_paths import resolve_output_directory
 from stratachrome.color_engine import build_tier_palette_previews
+from stratachrome.color_histograms import save_rgb_histogram
 from stratachrome.segmentation import ForegroundSegmenter, SegmentationConfig
 
 
@@ -114,6 +115,11 @@ def _parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Also export each tier resized to a 64px maximum edge.",
     )
+    parser.add_argument(
+        "--save-histograms",
+        action="store_true",
+        help="Also export RGB histograms for full-color and saved quantized tiers.",
+    )
     args = parser.parse_args()
     args.output = resolve_output_directory(args.output)
     return args
@@ -193,6 +199,12 @@ def main() -> int:
     bg_path = args.output / f"{stem}_background.png"
     bg_image.save(bg_path)
 
+    if args.save_histograms:
+        for tier_name, tier_image in (("background", bg_image), ("foreground", fg_image)):
+            histogram_path = args.output / f"{stem}_{tier_name}_histogram.png"
+            save_rgb_histogram(tier_image, histogram_path)
+            print(f"      - {tier_name.title()} histogram -> {histogram_path}")
+
     if args.save_matte:
         matte_path = args.output / f"{stem}_matte.png"
         _export_matte_preview(result.matte, matte_path)
@@ -214,6 +226,10 @@ def main() -> int:
                 quantized_path = args.output / f"{stem}_{tier_name}_quantized.png"
                 quantized.save(quantized_path)
                 print(f"      - {tier_name.title()} quantized -> {quantized_path}")
+                if args.save_histograms:
+                    histogram_path = args.output / f"{stem}_{tier_name}_quantized_histogram.png"
+                    save_rgb_histogram(quantized, histogram_path)
+                    print(f"      - {tier_name.title()} quantized histogram -> {histogram_path}")
 
     print(f"      - Foreground layer  -> {fg_path}")
     print(f"      - Background layer  -> {bg_path}")

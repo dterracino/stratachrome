@@ -27,6 +27,8 @@ from stratachrome.cli_defaults import (
 )
 from stratachrome.cli_paths import resolve_output_file
 from stratachrome.color_engine import (
+    FilamentMatch,
+    TierPalette,
     allocate_lookahead_tier_layers,
     extract_perceptual_lab,
     plan_geometry_first_tier_colors,
@@ -228,6 +230,49 @@ def _print_height_usage(z_grid: np.ndarray) -> None:
         print(f"     Z={height:.2f}mm: {count:,} pixels ({100.0 * count / total:.2f}%)")
 
 
+def _warn_palette_lightness_collisions(
+    tier_name: str,
+    palette: TierPalette,
+    lab_image: np.ndarray,
+    matte: np.ndarray,
+    *,
+    foreground: bool,
+    layer_count: int,
+) -> None:
+    """Warn when selected 64px target colors round to the same height layer."""
+    tier_mask = matte >= 0.5 if foreground else matte < 0.5
+    tier_lightness = np.asarray(lab_image[..., 0][tier_mask], dtype=np.float64)
+    minimum = float(tier_lightness.min())
+    maximum = float(tier_lightness.max())
+    lightness_range = maximum - minimum
+
+    matches_by_layer: dict[int, list[FilamentMatch]] = {}
+    for match in palette.matches:
+        if lightness_range <= 1e-8 or layer_count == 1:
+            layer_index = 0
+        else:
+            normalized = np.clip((match.target.lab[0] - minimum) / lightness_range, 0.0, 1.0)
+            layer_index = int(np.rint(normalized * (layer_count - 1)))
+        matches_by_layer.setdefault(layer_index, []).append(match)
+
+    for layer_index, matches in matches_by_layer.items():
+        if len(matches) < 2:
+            continue
+        for first_index, first in enumerate(matches[:-1]):
+            for second in matches[first_index + 1 :]:
+                first_rgb = "#" + "".join(f"{value:02X}" for value in first.target.rgb)
+                second_rgb = "#" + "".join(f"{value:02X}" for value in second.target.rgb)
+                print(
+                    f"WARNING: {tier_name} 64px colors {first_rgb} "
+                    f"(L*={first.target.lab[0]:.2f}, matched to "
+                    f"{_filament_display_name(first.filament)}) and {second_rgb} "
+                    f"(L*={second.target.lab[0]:.2f}, matched to "
+                    f"{_filament_display_name(second.filament)}) map to the same "
+                    f"height layer {layer_index + 1}/{layer_count}.",
+                    file=sys.stderr,
+                )
+
+
 def main() -> int:
     args = _parse_arguments()
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -362,6 +407,14 @@ def main() -> int:
         )
     bg_schedule = bg_plan.schedule
     bg_states = list(bg_schedule.states)
+    _warn_palette_lightness_collisions(
+        tier_label.title(),
+        bg_plan.palette,
+        full_lab,
+        matte,
+        foreground=False,
+        layer_count=len(bg_states),
+    )
 
     if args.tier_mode == "dual":
         print("5. Selecting and optimizing foreground tier colors...")
@@ -396,6 +449,14 @@ def main() -> int:
             )
         fg_schedule = fg_plan.schedule
         fg_states = list(fg_schedule.states)
+        _warn_palette_lightness_collisions(
+            "Foreground",
+            fg_plan.palette,
+            full_lab,
+            matte,
+            foreground=True,
+            layer_count=len(fg_states),
+        )
         _print_tier_schedule("Background", bg_schedule, background_layer_budget)
         _print_tier_schedule("Foreground", fg_schedule, foreground_layer_budget)
         print("6. Generating two-tier heightmap with pedestal support...")
@@ -434,7 +495,14 @@ def main() -> int:
     _print_height_usage(height_result.z_grid)
 
     if color_diagnostics is not None:
-        preview_path, heatmap_path = save_color_diagnostics(color_diagnostics, args.output)
+        (
+            preview_path,
+            heatmap_path,
+            source_64px_path,
+            preview_64px_path,
+            source_histogram_path,
+            preview_histogram_path,
+        ) = save_color_diagnostics(color_diagnostics, args.output, source_image)
         print(
             "   Color error: "
             f"mean={color_diagnostics.mean_delta_e:.2f}, "
@@ -443,6 +511,10 @@ def main() -> int:
         )
         print(f"   Predicted-color preview: {preview_path}")
         print(f"   Delta E heatmap (saturates at {DELTA_E_HEATMAP_MAX:g}): " f"{heatmap_path}")
+        print(f"   64px source image: {source_64px_path}")
+        print(f"   64px predicted-color image: {preview_64px_path}")
+        print(f"   Source-color histogram: {source_histogram_path}")
+        print(f"   Predicted-color histogram: {preview_histogram_path}")
 
     print("7. Building watertight manifold triangle mesh...")
     dimensions = PhysicalDimensions(width_mm=width_mm, height_mm=height_mm, base_floor_z_mm=0.0)

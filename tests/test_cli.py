@@ -79,6 +79,7 @@ class CliConsistencyTests(unittest.TestCase):
                 save_matte=True,
                 save_quantized=True,
                 save_colormaps=True,
+                save_histograms=True,
             )
 
             with (
@@ -98,6 +99,10 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertTrue((output / "input_foreground_colormap.png").is_file())
             self.assertTrue((output / "input_background_quantized.png").is_file())
             self.assertTrue((output / "input_foreground_quantized.png").is_file())
+            self.assertTrue((output / "input_background_histogram.png").is_file())
+            self.assertTrue((output / "input_foreground_histogram.png").is_file())
+            self.assertTrue((output / "input_background_quantized_histogram.png").is_file())
+            self.assertTrue((output / "input_foreground_quantized_histogram.png").is_file())
             with Image.open(output / "input_background_colormap.png") as colormap:
                 self.assertEqual(colormap.size, (64, 32))
             with Image.open(output / "input_background_quantized.png") as quantized:
@@ -111,6 +116,7 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertEqual(args.colors_per_tier, 4)
         self.assertFalse(args.save_quantized)
         self.assertFalse(args.save_colormaps)
+        self.assertFalse(args.save_histograms)
 
     def test_omitted_outputs_use_input_derived_names_in_output_directory(self) -> None:
         with patch("sys.argv", ["stratachrome", "images/photo.jpg"]):
