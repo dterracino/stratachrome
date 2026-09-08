@@ -16,6 +16,7 @@ from stratachrome.color_diagnostics import save_color_diagnostics
 from stratachrome.color_engine import (
     build_tier_image,
     extract_perceptual_lab,
+    plan_geometry_first_tier_colors,
     plan_tier_colors,
     sample_tier_lab,
     select_tier_palette,
@@ -23,10 +24,15 @@ from stratachrome.color_engine import (
 from stratachrome.optical_model import (
     ColorLayerMapper,
     assignments_from_layer_counts,
+    optimize_geometry_first_schedule,
     optimize_tier_schedule,
     simulate_tier_stack,
 )
-from stratachrome.depth_mapper import SingleTierDepthMapper, TwoTierDepthMapper
+from stratachrome.depth_mapper import (
+    GeometryFirstTwoTierDepthMapper,
+    SingleTierDepthMapper,
+    TwoTierDepthMapper,
+)
 from stratachrome.pipeline import _filament_display_name
 
 
@@ -239,6 +245,40 @@ class ColorToolsIntegrationTests(unittest.TestCase):
             sum(catalog_schedule.layer_counts),
         )
 
+    def test_geometry_first_schedule_preserves_fixed_layer_count(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        targets = np.asarray([black.lab] * 2 + [white.lab] * 6, dtype=np.float64)
+        geometry_layers = np.arange(8, dtype=np.int32)
+
+        schedule = optimize_geometry_first_schedule(
+            (white, black),
+            targets,
+            geometry_layers,
+            total_layers=8,
+        )
+
+        self.assertEqual(sum(schedule.layer_counts), 8)
+        self.assertEqual(len(schedule.states), 8)
+        self.assertEqual(schedule.assignments[0].filament.id, black.id)
+        self.assertGreater(schedule.layer_counts[1], schedule.layer_counts[0])
+
+    def test_geometry_first_schedule_moves_color_boundary_within_fixed_space(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        targets = np.asarray([black.lab] * 2 + [white.lab] * 6, dtype=np.float64)
+
+        schedule = optimize_geometry_first_schedule(
+            (black, white),
+            targets,
+            np.arange(8, dtype=np.int32),
+            total_layers=8,
+        )
+
+        self.assertEqual(schedule.assignments[1].start_layer, schedule.layer_counts[0])
+        self.assertLess(schedule.assignments[1].start_layer, 4)
+        self.assertEqual(sum(schedule.layer_counts), 8)
+
     def test_tier_budget_rejects_td_minimums_that_do_not_fit(self) -> None:
         black = self._filament("Black")
         white = self._filament("Jade White")
@@ -297,6 +337,33 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         )
         self.assertLessEqual(len(plan.schedule.states), 20)
         self.assertGreater(plan.selection_score, 0.0)
+
+    def test_geometry_first_tier_planner_fills_precomputed_layer_space(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        pixels = np.asarray(
+            [[[20, 20, 20], [80, 80, 80], [160, 160, 160], [240, 240, 240]]],
+            dtype=np.uint8,
+        )
+        image = Image.fromarray(pixels, mode="RGB")
+        lab = extract_perceptual_lab(image)
+        matte = np.zeros((1, 4), dtype=np.float32)
+        geometry_layers = np.asarray([[0, 2, 5, 7]], dtype=np.int32)
+
+        plan = plan_geometry_first_tier_colors(
+            image,
+            lab,
+            matte,
+            geometry_layers,
+            foreground=False,
+            total_layers=8,
+            max_colors=2,
+            collection=(black, white),
+        )
+
+        self.assertEqual(sum(plan.schedule.layer_counts), 8)
+        self.assertEqual(len(plan.schedule.states), 8)
+        self.assertEqual(len(plan.palette.filaments), 2)
 
     def test_layer_mapping_uses_full_lab_distance(self) -> None:
         red = self._filament("Red")
@@ -371,6 +438,44 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(float(result.z_grid[0, 0]), 0.3)
+
+    def test_geometry_first_two_tier_geometry_is_independent_of_chroma(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        states = simulate_tier_stack(
+            assignments_from_layer_counts((black, white), (1, 2)),
+            total_layers=3,
+        )
+        neutral_lab = np.asarray(
+            [
+                [
+                    [20.0, 0.0, 0.0],
+                    [80.0, 0.0, 0.0],
+                    [20.0, 0.0, 0.0],
+                    [80.0, 0.0, 0.0],
+                ]
+            ],
+            dtype=np.float64,
+        )
+        chromatic_lab = np.asarray(
+            [
+                [
+                    [20.0, 90.0, -70.0],
+                    [80.0, -90.0, 70.0],
+                    [20.0, -90.0, -70.0],
+                    [80.0, 90.0, 70.0],
+                ]
+            ],
+            dtype=np.float64,
+        )
+        matte = np.asarray([[0.0, 0.0, 1.0, 1.0]], dtype=np.float32)
+        mapper = GeometryFirstTwoTierDepthMapper(states, states)
+
+        neutral = mapper.generate_heightmap(neutral_lab, neutral_lab, matte)
+        chromatic = mapper.generate_heightmap(chromatic_lab, chromatic_lab, matte)
+
+        np.testing.assert_array_equal(neutral.z_grid, chromatic.z_grid)
+        np.testing.assert_allclose(neutral.z_grid, [[0.2, 0.4, 0.5, 0.7]])
 
     def test_color_diagnostics_reconstruct_exact_optical_states(self) -> None:
         black = self._filament("Black")

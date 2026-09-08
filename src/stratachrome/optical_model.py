@@ -259,6 +259,139 @@ def _schedule_score(
     return score, states, mean_delta_e
 
 
+def _geometry_first_schedule_score(
+    ordered: Sequence[FilamentRecord],
+    layer_counts: Sequence[int],
+    target_lab: np.ndarray,
+    target_layer_indices: np.ndarray,
+    *,
+    step_height_mm: float,
+    first_layer_height_mm: float,
+    initial_substrate_lab: LabColor | None,
+    td_scale: float,
+) -> tuple[float, list[LayerOpticalState]]:
+    """Score a schedule against colors fixed to geometry-selected layers."""
+    assignments = assignments_from_layer_counts(ordered, layer_counts)
+    states = simulate_tier_stack(
+        assignments,
+        total_layers=sum(layer_counts),
+        step_height_mm=step_height_mm,
+        first_layer_height_mm=first_layer_height_mm,
+        initial_substrate_lab=initial_substrate_lab,
+        td_scale=td_scale,
+    )
+    state_lab = np.asarray([state.simulated_lab for state in states], dtype=np.float64)
+    predicted_lab = state_lab[target_layer_indices]
+    errors = delta_e_2000_array(target_lab, predicted_lab)
+    return float(np.mean(errors)), states
+
+
+def optimize_geometry_first_schedule(
+    filaments: Sequence[FilamentRecord],
+    target_lab: np.ndarray,
+    target_layer_indices: np.ndarray,
+    *,
+    total_layers: int,
+    step_height_mm: float = 0.10,
+    first_layer_height_mm: float = 0.20,
+    initial_substrate_lab: LabColor | None = None,
+    minimum_color_contribution: float = 0.12,
+    td_scale: float = 1.0,
+) -> OptimizedTierSchedule:
+    """Allocate filament blocks across a fixed geometry-derived layer grid."""
+    if not filaments:
+        raise ValueError("At least one filament is required.")
+    if target_lab.ndim != 2 or target_lab.shape[1] != 3 or len(target_lab) == 0:
+        raise ValueError("target_lab must be a non-empty array shaped (N, 3).")
+    if target_layer_indices.shape != (len(target_lab),):
+        raise ValueError("target_layer_indices must contain one index per target color.")
+    if total_layers < 1:
+        raise ValueError("total_layers must be positive.")
+    if np.any(target_layer_indices < 0) or np.any(target_layer_indices >= total_layers):
+        raise ValueError("target_layer_indices must fall within the geometry layer grid.")
+    if step_height_mm <= 0.0 or first_layer_height_mm <= 0.0:
+        raise ValueError("Layer heights must be positive.")
+    if td_scale <= 0.0:
+        raise ValueError("td_scale must be positive.")
+
+    ordered = tuple(sorted(filaments, key=lambda item: item.lab[0]))
+    first_thicknesses = [step_height_mm] * len(ordered)
+    if initial_substrate_lab is None:
+        first_thicknesses[0] = first_layer_height_mm
+    minimum_counts = [
+        _minimum_layers_for_contribution(
+            filament,
+            first_layer_height_mm=first_thickness,
+            step_height_mm=step_height_mm,
+            minimum_color_contribution=minimum_color_contribution,
+            td_scale=td_scale,
+        )
+        for filament, first_thickness in zip(ordered, first_thicknesses)
+    ]
+    if initial_substrate_lab is None:
+        minimum_counts[0] = 1
+    minimum_total = sum(minimum_counts)
+    if minimum_total > total_layers:
+        raise ValueError(
+            f"Tier budget of {total_layers} layers cannot satisfy the "
+            f"TD minimum of {minimum_total} layers for {len(ordered)} colors."
+        )
+
+    counts = minimum_counts.copy()
+    for layer_offset in range(total_layers - minimum_total):
+        counts[layer_offset % len(counts)] += 1
+
+    best_score, best_states = _geometry_first_schedule_score(
+        ordered,
+        counts,
+        target_lab,
+        target_layer_indices,
+        step_height_mm=step_height_mm,
+        first_layer_height_mm=first_layer_height_mm,
+        initial_substrate_lab=initial_substrate_lab,
+        td_scale=td_scale,
+    )
+    while True:
+        best_counts: list[int] | None = None
+        move_score = best_score
+        move_states = best_states
+        for donor, donor_count in enumerate(counts):
+            if donor_count <= minimum_counts[donor]:
+                continue
+            for receiver in range(len(counts)):
+                if receiver == donor:
+                    continue
+                candidate = counts.copy()
+                candidate[donor] -= 1
+                candidate[receiver] += 1
+                candidate_score, candidate_states = _geometry_first_schedule_score(
+                    ordered,
+                    candidate,
+                    target_lab,
+                    target_layer_indices,
+                    step_height_mm=step_height_mm,
+                    first_layer_height_mm=first_layer_height_mm,
+                    initial_substrate_lab=initial_substrate_lab,
+                    td_scale=td_scale,
+                )
+                if candidate_score < move_score - 0.02:
+                    best_counts = candidate
+                    move_score = candidate_score
+                    move_states = candidate_states
+        if best_counts is None:
+            assignments = assignments_from_layer_counts(ordered, counts)
+            return OptimizedTierSchedule(
+                assignments=tuple(assignments),
+                states=tuple(best_states),
+                layer_counts=tuple(counts),
+                mean_delta_e=round(best_score, 4),
+                objective_score=round(best_score, 4),
+            )
+        counts = best_counts
+        best_score = move_score
+        best_states = move_states
+
+
 def _optimize_bounded_schedule(
     ordered: Sequence[FilamentRecord],
     minimum_counts: Sequence[int],

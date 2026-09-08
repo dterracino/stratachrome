@@ -18,10 +18,16 @@ from color_tools import FilamentRecord
 
 from stratachrome.color_engine import (
     extract_perceptual_lab,
+    plan_geometry_first_tier_colors,
     plan_tier_colors,
 )
 from stratachrome.color_diagnostics import DELTA_E_HEATMAP_MAX, save_color_diagnostics
-from stratachrome.depth_mapper import SingleTierDepthMapper, TwoTierDepthMapper
+from stratachrome.depth_mapper import (
+    GeometryFirstTwoTierDepthMapper,
+    SingleTierDepthMapper,
+    TwoTierDepthMapper,
+    map_tier_lightness_to_layer_indices,
+)
 from stratachrome.bambu_exporter import export_bambu_project
 from stratachrome.mesh_builder import PhysicalDimensions, WatertightMeshBuilder
 from stratachrome.optical_model import (
@@ -83,6 +89,15 @@ def _parse_arguments() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--mapping-mode",
+        choices=("optical", "geometry-first"),
+        default="optical",
+        help=(
+            "Mapping strategy: 'optical' lets simulated color choose relief height; "
+            "'geometry-first' fixes L*-based geometry before placing colors (default: optical)."
+        ),
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -100,8 +115,8 @@ def _parse_arguments() -> argparse.Namespace:
         type=int,
         default=120,
         help=(
-            "Maximum total layers available to each tier; the optimizer may use "
-            "fewer when extra thickness is not useful (default: 120)."
+            "Layers available to each tier; optical mode may use fewer, while "
+            "geometry-first uses exactly this count (default: 120)."
         ),
     )
     parser.add_argument(
@@ -201,7 +216,7 @@ def main() -> int:
     )
     print(
         f"   Swap mode: {args.swap_mode.upper()} | Tier mode: {args.tier_mode.upper()} "
-        "| Mapping mode: OPTICAL"
+        f"| Mapping mode: {args.mapping_mode.upper()}"
     )
     print(f"   Optical TD scale: {args.td_scale:g}")
 
@@ -218,43 +233,95 @@ def main() -> int:
     print("3. Converting the source image to CIELAB via color_tools...")
     full_lab = extract_perceptual_lab(source_image)
 
+    geometry_layer_indices: dict[str, np.ndarray] = {}
+    if args.mapping_mode == "geometry-first":
+        print("   Fixing tier geometry from CIELAB L* before color allocation...")
+        geometry_layer_indices["background"] = map_tier_lightness_to_layer_indices(
+            full_lab,
+            matte,
+            foreground=False,
+            layer_count=args.max_layers_per_tier,
+        )
+        if args.tier_mode == "two":
+            geometry_layer_indices["foreground"] = map_tier_lightness_to_layer_indices(
+                full_lab,
+                matte,
+                foreground=True,
+                layer_count=args.max_layers_per_tier,
+            )
+
     tier_label = "background" if args.tier_mode == "two" else "single"
     print(f"4. Selecting and optimizing {tier_label} tier colors...")
-    bg_plan = plan_tier_colors(
-        source_image,
-        full_lab,
-        matte,
-        foreground=False,
-        max_colors=args.colors_per_tier,
-        step_height_mm=args.layer_height,
-        first_layer_height_mm=args.first_layer,
-        max_layers_per_tier=args.max_layers_per_tier,
-        td_scale=args.td_scale,
-    )
+    if args.mapping_mode == "geometry-first":
+        bg_plan = plan_geometry_first_tier_colors(
+            source_image,
+            full_lab,
+            matte,
+            geometry_layer_indices["background"],
+            foreground=False,
+            total_layers=args.max_layers_per_tier,
+            max_colors=args.colors_per_tier,
+            step_height_mm=args.layer_height,
+            first_layer_height_mm=args.first_layer,
+            td_scale=args.td_scale,
+        )
+    else:
+        bg_plan = plan_tier_colors(
+            source_image,
+            full_lab,
+            matte,
+            foreground=False,
+            max_colors=args.colors_per_tier,
+            step_height_mm=args.layer_height,
+            first_layer_height_mm=args.first_layer,
+            max_layers_per_tier=args.max_layers_per_tier,
+            td_scale=args.td_scale,
+        )
     bg_schedule = bg_plan.schedule
     bg_states = list(bg_schedule.states)
 
     if args.tier_mode == "two":
         print("5. Selecting and optimizing foreground tier colors...")
-        fg_plan = plan_tier_colors(
-            source_image,
-            full_lab,
-            matte,
-            foreground=True,
-            max_colors=args.colors_per_tier,
-            step_height_mm=args.layer_height,
-            first_layer_height_mm=args.layer_height,
-            initial_substrate_lab=bg_states[-1].simulated_lab,
-            max_layers_per_tier=args.max_layers_per_tier,
-            td_scale=args.td_scale,
-            preferred_filaments=bg_plan.palette.filaments,
-        )
+        if args.mapping_mode == "geometry-first":
+            fg_plan = plan_geometry_first_tier_colors(
+                source_image,
+                full_lab,
+                matte,
+                geometry_layer_indices["foreground"],
+                foreground=True,
+                total_layers=args.max_layers_per_tier,
+                max_colors=args.colors_per_tier,
+                step_height_mm=args.layer_height,
+                first_layer_height_mm=args.layer_height,
+                initial_substrate_lab=bg_states[-1].simulated_lab,
+                td_scale=args.td_scale,
+                preferred_filaments=bg_plan.palette.filaments,
+            )
+        else:
+            fg_plan = plan_tier_colors(
+                source_image,
+                full_lab,
+                matte,
+                foreground=True,
+                max_colors=args.colors_per_tier,
+                step_height_mm=args.layer_height,
+                first_layer_height_mm=args.layer_height,
+                initial_substrate_lab=bg_states[-1].simulated_lab,
+                max_layers_per_tier=args.max_layers_per_tier,
+                td_scale=args.td_scale,
+                preferred_filaments=bg_plan.palette.filaments,
+            )
         fg_schedule = fg_plan.schedule
         fg_states = list(fg_schedule.states)
         _print_tier_schedule("Background", bg_schedule, args.max_layers_per_tier)
         _print_tier_schedule("Foreground", fg_schedule, args.max_layers_per_tier)
-        print("6. Generating discrete two-tier L* heightmap with pedestal support...")
-        depth_mapper = TwoTierDepthMapper(
+        print("6. Generating two-tier heightmap with pedestal support...")
+        depth_mapper_class = (
+            GeometryFirstTwoTierDepthMapper
+            if args.mapping_mode == "geometry-first"
+            else TwoTierDepthMapper
+        )
+        depth_mapper = depth_mapper_class(
             bg_states=bg_states,
             fg_states=fg_states,
             step_height_mm=args.layer_height,
@@ -276,9 +343,7 @@ def main() -> int:
         )
         height_result = single_mapper.generate_heightmap(full_lab)
         color_diagnostics = (
-            single_mapper.generate_color_diagnostics(full_lab)
-            if args.color_diagnostics
-            else None
+            single_mapper.generate_color_diagnostics(full_lab) if args.color_diagnostics else None
         )
     print(
         f"   Max height: {height_result.max_height_mm:.2f}mm ({height_result.total_layers} layers)"
@@ -294,10 +359,7 @@ def main() -> int:
             f"max={color_diagnostics.max_delta_e:.2f}"
         )
         print(f"   Predicted-color preview: {preview_path}")
-        print(
-            f"   Delta E heatmap (saturates at {DELTA_E_HEATMAP_MAX:g}): "
-            f"{heatmap_path}"
-        )
+        print(f"   Delta E heatmap (saturates at {DELTA_E_HEATMAP_MAX:g}): " f"{heatmap_path}")
 
     print("7. Building watertight manifold triangle mesh...")
     dimensions = PhysicalDimensions(width_mm=width_mm, height_mm=height_mm, base_floor_z_mm=0.0)

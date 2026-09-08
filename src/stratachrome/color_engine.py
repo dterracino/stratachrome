@@ -15,7 +15,11 @@ from color_tools import (
 )
 from color_tools.image import DominantColor
 
-from stratachrome.optical_model import OptimizedTierSchedule, optimize_tier_schedule
+from stratachrome.optical_model import (
+    OptimizedTierSchedule,
+    optimize_geometry_first_schedule,
+    optimize_tier_schedule,
+)
 
 _PALETTE_ANALYSIS_MAX_DIMENSION = 64
 _NEW_FILAMENT_REUSE_PENALTY = 0.75
@@ -263,6 +267,35 @@ def sample_tier_lab(
     return samples[indices]
 
 
+def sample_tier_lab_with_layers(
+    lab_image: np.ndarray,
+    layer_indices: np.ndarray,
+    matte: np.ndarray,
+    *,
+    foreground: bool,
+    max_samples: int = 4096,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return aligned target Lab colors and geometry-selected layer indices."""
+    if lab_image.ndim != 3 or lab_image.shape[-1] != 3:
+        raise ValueError("lab_image must have shape (height, width, 3).")
+    if lab_image.shape[:2] != matte.shape or layer_indices.shape != matte.shape:
+        raise ValueError("lab_image, layer_indices, and matte dimensions must match.")
+    if max_samples < 1:
+        raise ValueError("max_samples must be positive.")
+
+    tier_mask = matte >= 0.5 if foreground else matte < 0.5
+    samples = np.asarray(lab_image[tier_mask], dtype=np.float64)
+    sampled_layers = np.asarray(layer_indices[tier_mask], dtype=np.int32)
+    if len(samples) == 0:
+        tier_name = "foreground" if foreground else "background"
+        raise ValueError(f"Segmentation produced no {tier_name} samples.")
+    if len(samples) <= max_samples:
+        return samples, sampled_layers
+
+    indices = np.linspace(0, len(samples) - 1, num=max_samples, dtype=np.int64)
+    return samples[indices], sampled_layers[indices]
+
+
 def plan_tier_colors(
     image: Image.Image,
     lab_image: np.ndarray,
@@ -313,6 +346,70 @@ def plan_tier_colors(
                 },
                 layer_penalty=layer_penalty,
                 max_layers_per_tier=max_layers_per_tier,
+                td_scale=td_scale,
+            )
+        except ValueError as error:
+            if "cannot satisfy the TD minimum" not in str(error):
+                raise
+            removable = [
+                match for match in matches if match.filament.color.strip().casefold() != "black"
+            ]
+            if not removable:
+                raise
+            matches.remove(min(removable, key=lambda match: match.target.population))
+            continue
+        return TierColorPlan(working_palette, schedule, schedule.mean_delta_e)
+    raise ValueError("No optically valid quantized tier palette could be constructed.")
+
+
+def plan_geometry_first_tier_colors(
+    image: Image.Image,
+    lab_image: np.ndarray,
+    matte: np.ndarray,
+    geometry_layer_indices: np.ndarray,
+    *,
+    foreground: bool,
+    total_layers: int,
+    max_colors: int = 4,
+    step_height_mm: float = 0.10,
+    first_layer_height_mm: float = 0.20,
+    initial_substrate_lab: tuple[float, float, float] | None = None,
+    td_scale: float = 1.0,
+    collection: Sequence[FilamentRecord] | None = None,
+    preferred_filaments: Sequence[FilamentRecord] = (),
+    new_filament_penalty: float = _NEW_FILAMENT_REUSE_PENALTY,
+) -> TierColorPlan:
+    """Fit movable filament boundaries to a fixed geometry layer grid."""
+    targets, target_layers = sample_tier_lab_with_layers(
+        lab_image,
+        geometry_layer_indices,
+        matte,
+        foreground=foreground,
+    )
+    candidate_palette = select_tier_palette(
+        image,
+        matte,
+        foreground=foreground,
+        color_count=max_colors,
+        collection=collection,
+        preferred_filaments=preferred_filaments,
+        new_filament_penalty=new_filament_penalty,
+    )
+
+    matches = list(candidate_palette.matches)
+    while matches:
+        working_palette = TierPalette(
+            tuple(sorted(matches, key=lambda match: match.filament.lab[0]))
+        )
+        try:
+            schedule = optimize_geometry_first_schedule(
+                working_palette.filaments,
+                targets,
+                target_layers,
+                total_layers=total_layers,
+                step_height_mm=step_height_mm,
+                first_layer_height_mm=first_layer_height_mm,
+                initial_substrate_lab=initial_substrate_lab,
                 td_scale=td_scale,
             )
         except ValueError as error:

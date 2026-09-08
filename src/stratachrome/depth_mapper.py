@@ -163,6 +163,24 @@ def _map_lightness_to_layer_indices(
     return layer_indices
 
 
+def map_tier_lightness_to_layer_indices(
+    target_lab: np.ndarray,
+    matte: np.ndarray,
+    *,
+    foreground: bool,
+    layer_count: int,
+) -> np.ndarray:
+    """Map one segmented tier's L* range onto a fixed printable layer grid."""
+    if target_lab.ndim != 3 or target_lab.shape[-1] != 3:
+        raise ValueError("target_lab must have shape (height, width, 3).")
+    if target_lab.shape[:2] != matte.shape:
+        raise ValueError("target_lab and matte dimensions must match.")
+    if layer_count < 1:
+        raise ValueError("layer_count must be positive.")
+    tier_mask = matte >= 0.5 if foreground else matte < 0.5
+    return _map_lightness_to_layer_indices(target_lab, layer_count, tier_mask)
+
+
 def _map_lightness_to_elevations(
     target_lab: np.ndarray,
     height_lut: np.ndarray,
@@ -362,6 +380,85 @@ class TwoTierDepthMapper:
         combined_indices = np.where(
             foreground_mask,
             fg_indices + bg_state_count,
+            bg_indices,
+        )
+        return _diagnostics_from_layer_indices(target_lab, combined_indices, combined_states)
+
+
+class GeometryFirstTwoTierDepthMapper(TwoTierDepthMapper):
+    """Map tier-local lightness to fixed geometry before evaluating color."""
+
+    def _tier_layer_indices(
+        self,
+        bg_lab: np.ndarray,
+        fg_lab: np.ndarray,
+        matte: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        _validate_image_dimensions(bg_lab, fg_lab, matte)
+        foreground_mask = matte >= 0.5
+        bg_indices = map_tier_lightness_to_layer_indices(
+            bg_lab,
+            matte,
+            foreground=False,
+            layer_count=len(self._bg_states),
+        )
+        fg_indices = map_tier_lightness_to_layer_indices(
+            fg_lab,
+            matte,
+            foreground=True,
+            layer_count=len(self._fg_states),
+        )
+        return bg_indices, fg_indices, foreground_mask
+
+    def generate_heightmap(
+        self,
+        bg_lab: np.ndarray,
+        fg_lab: np.ndarray,
+        matte: np.ndarray,
+    ) -> HeightmapResult:
+        """Build a two-tier relief from fixed tier-local lightness layers."""
+        bg_indices, fg_indices, _ = self._tier_layer_indices(bg_lab, fg_lab, matte)
+        bg_z = self._bg_height_lut[bg_indices]
+        fg_z = self._fg_height_lut[fg_indices]
+        z_grid = _blend_boundaries(bg_z, fg_z, matte)
+        bg_swaps = _extract_tier_swaps(
+            self._bg_states,
+            layer_offset=0,
+            tier_name="background",
+            height_lut=self._bg_height_lut,
+        )
+        fg_swaps = _extract_tier_swaps(
+            self._fg_states,
+            layer_offset=self._bg_budget.layer_count,
+            tier_name="foreground",
+            height_lut=self._fg_height_lut,
+        )
+        return HeightmapResult(
+            z_grid=z_grid,
+            bg_surface_z=bg_z,
+            fg_surface_z=fg_z,
+            total_layers=self._bg_budget.layer_count + self._fg_budget.layer_count,
+            max_height_mm=round(float(np.max(z_grid)), 4),
+            swap_schedule=bg_swaps + fg_swaps,
+        )
+
+    def generate_color_diagnostics(
+        self,
+        bg_lab: np.ndarray,
+        fg_lab: np.ndarray,
+        matte: np.ndarray,
+    ) -> ColorDiagnosticResult:
+        """Evaluate colors at the layers selected by fixed two-tier geometry."""
+        bg_indices, fg_indices, foreground_mask = self._tier_layer_indices(
+            bg_lab,
+            fg_lab,
+            matte,
+        )
+        target_lab = np.where(foreground_mask[..., None], fg_lab, bg_lab)
+        combined_states = self._bg_states + self._fg_states
+        combined_indices = np.where(
+            foreground_mask,
+            fg_indices + len(self._bg_states),
             bg_indices,
         )
         return _diagnostics_from_layer_indices(target_lab, combined_indices, combined_states)
