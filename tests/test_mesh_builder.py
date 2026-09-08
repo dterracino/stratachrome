@@ -10,21 +10,6 @@ from stratachrome.mesh_builder import PhysicalDimensions, WatertightMeshBuilder
 
 
 class WatertightMeshBuilderTests(unittest.TestCase):
-    def test_uniform_pixel_stack_merges_into_one_cuboid(self) -> None:
-        dimensions = PhysicalDimensions(40.0, 30.0)
-
-        for height in (0.2, 1.2):
-            z_grid = np.full((3, 4), height, dtype=np.float32)
-            mesh = WatertightMeshBuilder(dimensions).build_mesh(z_grid)
-
-            self.assertEqual(mesh.vertex_count, 8)
-            self.assertEqual(mesh.face_count, 12)
-            np.testing.assert_allclose(mesh.vertices.min(axis=0), [0.0, 0.0, 0.0])
-            np.testing.assert_allclose(
-                mesh.vertices.max(axis=0),
-                [dimensions.width_mm, dimensions.height_mm, height],
-            )
-
     def test_floor_contacts_bed_and_horizontal_faces_point_outward(self) -> None:
         z_grid = np.asarray([[0.2, 0.3, 0.4], [0.5, 0.6, 0.7]], dtype=np.float32)
         mesh = WatertightMeshBuilder(PhysicalDimensions(20.0, 10.0)).build_mesh(z_grid)

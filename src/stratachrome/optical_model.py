@@ -356,7 +356,7 @@ def optimize_tier_schedule(
     initial_substrate_lab: LabColor | None = None,
     target_by_filament: Mapping[str, LabColor] | None = None,
     fit_tolerance: float = 0.02,
-    layer_penalty: float = 1.0,
+    layer_penalty: float = 0.25,
     minimum_color_contribution: float = 0.12,
     anchor_weight: float = 0.50,
     terminal_transmittance: float = 0.02,

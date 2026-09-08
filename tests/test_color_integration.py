@@ -208,7 +208,7 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         self.assertEqual(schedule.assignments[0].filament.id, black.id)
         self.assertEqual(len(schedule.states), sum(schedule.layer_counts))
         self.assertGreaterEqual(schedule.layer_counts[1], 4)
-        self.assertLess(sum(schedule.layer_counts), 20)
+        self.assertEqual(sum(schedule.layer_counts), 20)
         self.assertAlmostEqual(
             schedule.states[-1].height_mm,
             0.2 + 0.1 * (len(schedule.states) - 1),
@@ -263,7 +263,7 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         self.assertEqual(black.td_value, 0.1)
         self.assertLess(sum(schedule.layer_counts), 20)
 
-    def test_tier_planner_respects_palette_ceiling(self) -> None:
+    def test_tier_planner_retains_palette_when_td_minimums_fit(self) -> None:
         pixels = np.zeros((24, 24, 3), dtype=np.uint8)
         pixels[:12, :12] = (10, 40, 100)
         pixels[:12, 12:] = (235, 220, 190)
@@ -282,8 +282,7 @@ class ColorToolsIntegrationTests(unittest.TestCase):
             max_layers_per_tier=20,
         )
 
-        self.assertLessEqual(len(plan.palette.filaments), 4)
-        self.assertGreater(len(plan.palette.filaments), 1)
+        self.assertEqual(len(plan.palette.filaments), 4)
         self.assertEqual(
             len(plan.schedule.assignments),
             len(plan.palette.filaments),
@@ -352,6 +351,23 @@ class ColorToolsIntegrationTests(unittest.TestCase):
             all(swap.filament_name.startswith("Bambu Lab ") for swap in result.swap_schedule)
         )
         self.assertTrue(all(swap.filament_hex.startswith("#") for swap in result.swap_schedule))
+
+    def test_two_tier_depth_blends_feathered_boundaries(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        states = simulate_tier_stack(
+            assignments_from_layer_counts((black, white), (1, 1)),
+            total_layers=2,
+        )
+        target = np.asarray([[states[0].simulated_lab]])
+
+        result = TwoTierDepthMapper(states, states).generate_heightmap(
+            target,
+            target,
+            np.asarray([[0.5]], dtype=np.float32),
+        )
+
+        self.assertAlmostEqual(float(result.z_grid[0, 0]), 0.3)
 
     def test_single_tier_depth_maps_lightness_monotonically_to_layer_grid(self) -> None:
         black = self._filament("Black")

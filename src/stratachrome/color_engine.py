@@ -273,7 +273,7 @@ def plan_tier_colors(
     step_height_mm: float = 0.10,
     first_layer_height_mm: float = 0.20,
     initial_substrate_lab: tuple[float, float, float] | None = None,
-    layer_penalty: float = 1.0,
+    layer_penalty: float = 0.25,
     max_layers_per_tier: int = 120,
     td_scale: float = 1.0,
     collection: Sequence[FilamentRecord] | None = None,
@@ -296,30 +296,25 @@ def plan_tier_colors(
         new_filament_penalty=new_filament_penalty,
     )
 
-    def optimize_matches(matches: list[FilamentMatch]) -> TierColorPlan:
+    matches = list(candidate_palette.matches)
+    while matches:
         working_palette = TierPalette(
             tuple(sorted(matches, key=lambda match: match.filament.lab[0]))
         )
-        schedule = optimize_tier_schedule(
-            working_palette.filaments,
-            targets,
-            step_height_mm=step_height_mm,
-            first_layer_height_mm=first_layer_height_mm,
-            initial_substrate_lab=initial_substrate_lab,
-            target_by_filament={
-                match.filament.id: match.target.lab for match in working_palette.matches
-            },
-            layer_penalty=layer_penalty,
-            max_layers_per_tier=max_layers_per_tier,
-            td_scale=td_scale,
-        )
-        return TierColorPlan(working_palette, schedule, schedule.objective_score)
-
-    matches = list(candidate_palette.matches)
-    while matches:
         try:
-            best_plan = optimize_matches(matches)
-            break
+            schedule = optimize_tier_schedule(
+                working_palette.filaments,
+                targets,
+                step_height_mm=step_height_mm,
+                first_layer_height_mm=first_layer_height_mm,
+                initial_substrate_lab=initial_substrate_lab,
+                target_by_filament={
+                    match.filament.id: match.target.lab for match in working_palette.matches
+                },
+                layer_penalty=layer_penalty,
+                max_layers_per_tier=max_layers_per_tier,
+                td_scale=td_scale,
+            )
         except ValueError as error:
             if "cannot satisfy the TD minimum" not in str(error):
                 raise
@@ -329,27 +324,6 @@ def plan_tier_colors(
             if not removable:
                 raise
             matches.remove(min(removable, key=lambda match: match.target.population))
-    else:
-        raise ValueError("No optically valid quantized tier palette could be constructed.")
-
-    while len(matches) > 1:
-        alternatives: list[tuple[list[FilamentMatch], TierColorPlan]] = []
-        for removed_index in range(len(matches)):
-            candidate_matches = matches[:removed_index] + matches[removed_index + 1 :]
-            try:
-                alternatives.append((candidate_matches, optimize_matches(candidate_matches)))
-            except ValueError as error:
-                if "cannot satisfy the TD minimum" not in str(error):
-                    raise
-        if not alternatives:
-            break
-        next_matches, next_plan = min(
-            alternatives,
-            key=lambda candidate: candidate[1].selection_score,
-        )
-        if next_plan.selection_score >= best_plan.selection_score - 0.02:
-            break
-        matches = next_matches
-        best_plan = next_plan
-
-    return best_plan
+            continue
+        return TierColorPlan(working_palette, schedule, schedule.mean_delta_e)
+    raise ValueError("No optically valid quantized tier palette could be constructed.")

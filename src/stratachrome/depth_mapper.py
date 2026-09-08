@@ -13,7 +13,7 @@ from typing import cast
 
 import numpy as np
 
-from stratachrome.optical_model import LayerOpticalState
+from stratachrome.optical_model import ColorLayerMapper, LayerOpticalState
 
 
 @dataclass(frozen=True)
@@ -151,13 +151,26 @@ def _map_lightness_to_elevations(
     return cast(np.ndarray, height_lut[layer_indices])
 
 
-def _select_tier_surfaces(
+def _map_zone_to_elevations(
+    target_lab: np.ndarray,
+    mapper: ColorLayerMapper,
+    height_lut: np.ndarray,
+) -> np.ndarray:
+    """Map a Lab image to discrete millimeter elevations using a height LUT."""
+    layer_indices = mapper.map_image_lab_to_layers(target_lab)
+    clamped_indices = np.clip(layer_indices, 0, len(height_lut) - 1)
+    return cast(np.ndarray, height_lut[clamped_indices])
+
+
+def _blend_boundaries(
     bg_z: np.ndarray,
     fg_z: np.ndarray,
     matte: np.ndarray,
 ) -> np.ndarray:
-    """Select one tier per pixel without creating off-grid elevations."""
-    return cast(np.ndarray, np.where(matte >= 0.5, fg_z, bg_z).astype(np.float32))
+    """Combine background and foreground surfaces using soft matte blending."""
+    clamped_matte = np.clip(matte, 0.0, 1.0).astype(np.float32)
+    blended = (1.0 - clamped_matte) * bg_z + clamped_matte * fg_z
+    return cast(np.ndarray, blended.astype(np.float32))
 
 
 def _extract_tier_swaps(
@@ -194,7 +207,7 @@ def _extract_tier_swaps(
 
 
 class TwoTierDepthMapper:
-    """Coordinate lightness mapping, stacking, and swaps for two-tier models."""
+    """Coordinate optical color mapping, stacking, and swaps for two-tier models."""
 
     def __init__(
         self,
@@ -203,6 +216,8 @@ class TwoTierDepthMapper:
         step_height_mm: float = 0.10,
         first_layer_height_mm: float = 0.20,
     ) -> None:
+        self._bg_mapper = ColorLayerMapper(bg_states)
+        self._fg_mapper = ColorLayerMapper(fg_states)
         self._bg_states = bg_states
         self._fg_states = fg_states
         self._step_height_mm = step_height_mm
@@ -251,21 +266,12 @@ class TwoTierDepthMapper:
         """
         _validate_image_dimensions(bg_lab, fg_lab, matte)
 
-        # 1. Map each tier's own lightness range to physical elevations.
-        foreground_mask = matte >= 0.5
-        bg_z = _map_lightness_to_elevations(
-            bg_lab,
-            self._bg_height_lut,
-            ~foreground_mask,
-        )
-        fg_z = _map_lightness_to_elevations(
-            fg_lab,
-            self._fg_height_lut,
-            foreground_mask,
-        )
+        # 1. Map target colors to the closest simulated optical states.
+        bg_z = _map_zone_to_elevations(bg_lab, self._bg_mapper, self._bg_height_lut)
+        fg_z = _map_zone_to_elevations(fg_lab, self._fg_mapper, self._fg_height_lut)
 
-        # 2. Select tiers discretely so all surfaces remain on slicer layers.
-        z_grid = _select_tier_surfaces(bg_z, fg_z, matte)
+        # 2. Smoothly blend across feathered segmentation boundaries.
+        z_grid = _blend_boundaries(bg_z, fg_z, matte)
 
         # 3. Assemble swap schedules
         bg_swaps = _extract_tier_swaps(

@@ -6,25 +6,27 @@
 
 **Stratachrome** is an automated multi-color 3D relief printing pipeline designed for standard single-extruder FDM 3D printers and multi-material systems (Bambu Lab AMS, Orca Slicer).
 
-Stratachrome can process the full image as one relief or use **BiRefNet background segmentation** to create independently normalized background and foreground tiers. It selects real Bambu Lab PLA Basic/Matte filaments, derives useful transition thickness from TD-driven optical modeling, maps tier-local CIELAB $L^*$ to printable elevations, and packages a closed terraced mesh inside a ready-to-slice Bambu/Orca 3MF container.
+Stratachrome can process the full image as one relief or use **BiRefNet background segmentation** to create stacked background and foreground tiers. It selects real Bambu Lab PLA Basic/Matte filaments, derives useful transition thickness from TD-driven optical modeling, maps image colors to simulated printable layer states, and packages a closed terraced mesh inside a ready-to-slice Bambu/Orca 3MF container.
 
 ---
 
 ## Key Features
 
-* **Selectable Relief Modes**: Use the full image as one lightweight tier or isolate foreground subjects with BiRefNet and stack independently normalized background and foreground reliefs.
+* **Selectable Relief Modes**: Use the full image as one lightweight tier or isolate foreground subjects with BiRefNet and stack optically mapped background and foreground reliefs.
 * **Adaptive Tier Palettes**: Resizes each tier to a 64-pixel maximum edge with nearest-neighbor sampling, quantizes it to twice the requested filament cap, and selects up to the requested 2–8 colors from `FilamentCollections.BAMBU_PLA_BASICMATTE`. Filaments may be reused across tiers.
 * **Predictive Optical Modeling**: Uses each selected filament's measured color and TD value to simulate successive layers in linear CIE XYZ.
 * **Perceptual Color Precision**: Uses `color-match-tools` for image/filament CIELAB conversion, filament records and collections, and vectorized CIEDE2000 comparisons.
-* **Information-Driven Thickness**: Optimizes layer schedules by balancing reconstruction error against the diminishing perceptual value of each additional layer, and removes selected filaments that worsen the complete stack objective.
-* **Lightness-Driven Relief**: Maps each tier's local $L^*$ range monotonically onto its available layer heights while optical simulation determines filament transitions separately.
+* **Information-Driven Thickness**: Optimizes layer schedules by balancing reconstruction error against the diminishing perceptual value of each additional layer. Selected non-black filaments are removed only when their TD-derived minimums cannot fit the tier budget.
+* **Adjustable TD Calibration**: Scales catalog transmission distances during optical simulation so predicted blending can be calibrated against physical filament and printer behavior.
+* **Optically Mapped Relief**: Maps two-tier image colors to the nearest simulated CIELAB layer states using CIEDE2000. Single-tier mode maps the image's $L^*$ range onto its available layer heights.
 * **Calibrated Layer Alignment**: Built with a dedicated 0.20 mm first-layer base for reliable bed adhesion and 0.10 mm layer increments matching standard slicer toolpaths.
 * **Flexible Swap Modes**: Supports automated multi-material hardware changers (`--swap-mode ams`) or single-extruder pause triggers (`--swap-mode manual`).
 * **Auto-Scaling Aspect Ratios**: Specify target maximum dimension in millimeters (`--size`); landscape and portrait images automatically scale to fit within your build plate envelope.
 * **Slicer-Optimized Grid Resolution**: Built around standard 0.42 mm nozzle line widths and Arachne dynamic extrusion parameters, sampling up to 1000 px resolution for Nyquist fidelity without slicing lag or mesh bloat.
-* **Flat Pixel Terraces**: Gives every resampled image pixel a horizontal plateau at its selected layer and joins neighboring elevations with true vertical walls.
-* **3D Coplanar Reduction**: Merges connected pixel faces across X, Y, and consecutive Z layers into boundary-only triangulations. Uniform stacked regions become single cuboid shells while exact heights and manifold transition junctions are preserved.
+* **Flat Pixel Terraces**: Gives every resampled image pixel a horizontal plateau at its selected layer and joins neighboring elevations across narrow transition gaps.
+* **Conservative Surface Reduction**: Reduces coplanar regions in the XY surface while preserving the known-good watertight perimeter skirt and bottom closure.
 * **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives with layer changes and finish-aware Bambu PLA Basic/Matte X1C profiles.
+* **Generation Diagnostics**: Reports selected filaments, layer allocations, convergence status, CIEDE2000 error, objective score, used height levels, and final mesh size.
 
 ---
 
@@ -48,10 +50,10 @@ Input Image
 [Schedule Optimization] ───► Useful TD/XYZ Transition Schedule
          │
          ▼
-[L* Depth Mapper] ─────────► Single Relief or Discrete Two-Tier Pedestal
+[Depth Mapper] ────────────► Single L* Relief or Full-Lab Two-Tier Pedestal
          │
          ▼
-[Watertight Mesh Builder] ─► 2-Manifold Triangular Mesh
+[XY Surface Reduction] ────► Watertight 2-Manifold Triangle Mesh
          │
          ▼
 [OPC 3MF Exporter] ────────► Bambu Studio / Orca Slicer .3mf Container (AMS / Manual)
@@ -64,7 +66,7 @@ Input Image
 ### 1. Clone the Repository
 
 ```bash
-git clone [https://github.com/dterracino/stratachrome.git](https://github.com/dterracino/stratachrome.git)
+git clone https://github.com/dterracino/stratachrome.git
 cd stratachrome
 ```
 
@@ -88,7 +90,7 @@ source .venv/bin/activate
 If you have an NVIDIA GPU, install the CUDA-enabled PyTorch wheels first:
 
 ```bash
-pip install torch torchvision --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
 Install Stratachrome in editable mode:
@@ -153,11 +155,37 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--first-layer` | `0.20` | First layer bed-contact height in millimeters. |
 | `--layer-height` | `0.10` | Standard vertical layer step height in millimeters. |
 | `--swap-mode` | `ams` | Filament change mode: `ams` for multi-material auto-switching, `manual` for single-extruder pause triggers. |
-| `--tier-mode` | `two` | `single` processes the full image without loading BiRefNet; `two` stacks independently normalized background and foreground tiers. |
+| `--tier-mode` | `two` | `single` processes the full image without loading BiRefNet; `two` maps segmented background and foreground colors to stacked simulated optical states. |
 | `--device` | `auto` | Compute device for transformer inference (`cuda` or `cpu`). |
 | `--colors-per-tier` | `4` | Maximum filament count from 2 to 8 per tier. Each 64px nearest-neighbor tier image is quantized to twice this ceiling, providing extra matching candidates; duplicate matches can still collapse to fewer filaments and foreground selection prefers reusable background colors. |
 | `--max-layers-per-tier` | `120` | Maximum total layers available to each tier. TD and perceptual fit determine how many layers are actually used. |
-| `--td-scale` | `1.0` | Experimental multiplier for catalog TD values. Use calibration prints before changing this value for production output. |
+| `--td-scale` | `1.0` | Positive multiplier for catalog TD values. Values above `1.0` model greater transparency and generally require more layers; values below `1.0` model greater opacity and generally require fewer layers. |
+
+### Understanding `--td-scale`
+
+Transmission distance (TD) describes how much material is required to obscure the color beneath it. Stratachrome applies the scale before simulating each layer:
+
+$$
+\mathrm{TD}_{\mathrm{effective}} = \mathrm{TD}_{\mathrm{catalog}} \times \mathrm{td\_scale}
+$$
+
+The remaining contribution from the material below a layer of thickness $d$ is:
+
+$$
+T = 10^{-d / \mathrm{TD}_{\mathrm{effective}}}
+$$
+
+For a filament with a catalog TD of $4\,\mathrm{mm}$:
+
+| `--td-scale` | Effective TD | Modeled behavior |
+| --- | --- | --- |
+| `0.5` | $2\,\mathrm{mm}$ | More opaque; the new color covers the substrate faster. |
+| `1.0` | $4\,\mathrm{mm}$ | Uses the catalog value unchanged. |
+| `2.0` | $8\,\mathrm{mm}$ | More transparent; the substrate remains visible through more layers. |
+
+The setting does not rescale the source image or directly multiply model height. It changes the optical predictions used to choose filament thicknesses, so the optimized layer counts and resulting tier height can change indirectly. Larger values can also make a small `--max-layers-per-tier` budget insufficient.
+
+Start with `1.0`. If printed upper colors hide lower colors faster than predicted, try a smaller value. If lower colors remain visible longer than predicted, try a larger value. Calibrate with the same filament, layer height, nozzle, and print settings intended for production.
 
 ### `stratachrome-segment`
 
@@ -204,12 +232,15 @@ stratachrome/
 ├── src/
 │   └── stratachrome/
 │       ├── __init__.py            # Public API exports
+│       ├── bambu_exporter.py       # High-level native Bambu/Orca project writer
+│       ├── bambu_project.py        # 3MF XML, printer settings, and filament profiles
 │       ├── color_engine.py        # 64px tier quantization, filament matching, and joint planning
 │       ├── depth_mapper.py        # Two-tier height budget & solid pedestal enforcement
-│       ├── export_3mf.py          # OPC/3MF packaging & layer pause metadata generator
-│       ├── mesh_builder.py        # Terraced pixel mesh & binary STL generator
+│       ├── export_3mf.py           # Generic OPC/3MF packaging helpers
+│       ├── mesh_builder.py         # Three-axis reduced manifold mesh & binary STL generator
 │       ├── optical_model.py       # TD/XYZ simulation, CIEDE2000 mapping, schedule optimization
 │       ├── pipeline.py            # End-to-end CLI pipeline orchestrator
+│       ├── resources/              # Packaged Bambu X1C project settings
 │       ├── segment_cli.py         # Standalone segmentation & matte verification CLI
 │       ├── segmentation.py        # BiRefNet background extraction & edge feathering
 │       └── stl_test_cli.py        # Standalone mesh test & STL export CLI
