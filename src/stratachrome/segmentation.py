@@ -18,7 +18,6 @@ import torch
 import torchvision.transforms as T
 from transformers import AutoModelForImageSegmentation
 
-
 _DEFAULT_MODEL_ID = "ZhengPeng7/BiRefNet"
 _MODEL_INPUT_DIMENSION = 1024
 
@@ -29,16 +28,19 @@ class SegmentationConfig:
 
     Attributes:
         model_id: Hugging Face model identifier.
-        device: Computation target ('cuda', 'cpu', or None for auto-detect).
+        device: Computation target ('auto', 'cuda', or 'cpu').
         feather_radius: Gaussian blur kernel radius for edge softness.
         threshold: Binarization cut-off; None preserves soft alpha gradients.
     """
+
     model_id: str = _DEFAULT_MODEL_ID
-    device: Optional[str] = None
+    device: Optional[str] = "auto"
     feather_radius: int = 2
     threshold: Optional[float] = None
 
     def __post_init__(self) -> None:
+        if self.device not in {None, "auto", "cuda", "cpu"}:
+            raise ValueError(f"device must be 'auto', 'cuda', or 'cpu', got {self.device!r}")
         if self.feather_radius < 0:
             raise ValueError(f"feather_radius must be non-negative, got {self.feather_radius}")
         if self.threshold is not None and not (0.0 <= self.threshold <= 1.0):
@@ -53,6 +55,7 @@ class SegmentationResult:
         matte: 2D float32 array in [0.0, 1.0] matching source image dimensions.
                1.0 represents definite foreground, 0.0 represents background.
     """
+
     matte: np.ndarray
 
     def __post_init__(self) -> None:
@@ -62,7 +65,7 @@ class SegmentationResult:
 
 def _resolve_compute_device(requested: Optional[str]) -> torch.device:
     """Determines the target torch device based on availability and request."""
-    if requested:
+    if requested not in {None, "auto"}:
         return torch.device(requested)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -82,11 +85,13 @@ def _load_birefnet_model(model_id: str, device: torch.device) -> torch.nn.Module
 
 def _build_input_transform() -> T.Compose:
     """Constructs the standard image preprocessing transform for BiRefNet."""
-    return T.Compose([
-        T.Resize((_MODEL_INPUT_DIMENSION, _MODEL_INPUT_DIMENSION)),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    return T.Compose(
+        [
+            T.Resize((_MODEL_INPUT_DIMENSION, _MODEL_INPUT_DIMENSION)),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
 
 
 def _run_inference(
@@ -149,9 +154,7 @@ def partition_lightness_channels(
             - fg_lightness: Full lightness matrix for foreground tier mapping.
     """
     if full_lightness.shape != matte.shape:
-        raise ValueError(
-            f"Shape mismatch: lightness {full_lightness.shape} vs matte {matte.shape}"
-        )
+        raise ValueError(f"Shape mismatch: lightness {full_lightness.shape} vs matte {matte.shape}")
 
     bg_lightness = full_lightness.copy().astype(np.float32)
     fg_lightness = full_lightness.copy().astype(np.float32)

@@ -16,6 +16,16 @@ import numpy as np
 from PIL import Image
 from color_tools import FilamentRecord
 
+from stratachrome.cli_defaults import (
+    DEFAULT_COLORS_PER_TIER,
+    DEFAULT_FIRST_LAYER_HEIGHT_MM,
+    DEFAULT_LAYER_HEIGHT_MM,
+    DEFAULT_MAX_LAYERS_PER_TIER,
+    DEFAULT_MAX_DIM,
+    DEFAULT_SIZE_MM,
+    DEFAULT_TOTAL_LAYERS,
+)
+from stratachrome.cli_paths import resolve_output_file
 from stratachrome.color_engine import (
     allocate_lookahead_tier_layers,
     extract_perceptual_lab,
@@ -40,53 +50,56 @@ def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stratachrome: Automated Multi-Color 3MF Relief Generator."
     )
-    parser.add_argument("-i", "--input", type=Path, required=True, help="Input RGB image path.")
+    parser.add_argument("input", type=Path, help="Input RGB image path.")
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        default=Path("output/project.3mf"),
-        help="Output 3MF path (default: output/project.3mf).",
+        default=None,
+        help=("Output 3MF file or directory. Defaults to " "output/<input-stem>_stratachrome.3mf."),
     )
     parser.add_argument(
         "-s",
         "--size",
         type=float,
-        default=150.0,
-        help="Target physical size in mm for the maximum image dimension (default: 150.0).",
+        default=DEFAULT_SIZE_MM,
+        help=f"Target physical size in mm for the maximum image dimension (default: {DEFAULT_SIZE_MM}).",
     )
     parser.add_argument(
         "--max-dim",
         type=int,
-        default=1000,
-        help="Maximum raster dimension for mesh grid (default: 1000).",
+        default=DEFAULT_MAX_DIM,
+        help=f"Maximum raster dimension for mesh grid (default: {DEFAULT_MAX_DIM}).",
     )
     parser.add_argument(
         "--layer-height",
         type=float,
-        default=0.10,
-        help="Standard layer step height in mm (default: 0.10).",
+        default=DEFAULT_LAYER_HEIGHT_MM,
+        help=f"Standard layer step height in mm (default: {DEFAULT_LAYER_HEIGHT_MM:.2f}).",
     )
     parser.add_argument(
         "--first-layer",
         type=float,
-        default=0.20,
-        help="First layer bed-contact height in mm (default: 0.20).",
+        default=DEFAULT_FIRST_LAYER_HEIGHT_MM,
+        help=(
+            "First layer bed-contact height in mm "
+            f"(default: {DEFAULT_FIRST_LAYER_HEIGHT_MM:.2f})."
+        ),
     )
     parser.add_argument(
         "--swap-mode",
         type=str,
-        choices=["ams", "manual"],
-        default="ams",
-        help="Filament change mode: 'ams' for multi-material auto-switching, 'manual' for single-extruder pause triggers (default: ams).",
+        choices=["auto", "manual"],
+        default="auto",
+        help="Filament change mode: 'auto' for multi-material switching, 'manual' for single-extruder pause triggers (default: auto).",
     )
     parser.add_argument(
         "--tier-mode",
-        choices=("single", "two"),
-        default="two",
+        choices=("single", "dual"),
+        default="dual",
         help=(
             "Relief mode: 'single' analyzes the full image without segmentation; "
-            "'two' separates and stacks background/foreground tiers (default: two)."
+            "'dual' separates and stacks background/foreground tiers (default: dual)."
         ),
     )
     parser.add_argument(
@@ -101,31 +114,34 @@ def _parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--device",
-        type=str,
-        default=None,
-        help="Torch device ('cuda', 'cpu'). Auto-detected if omitted.",
+        choices=("auto", "cuda", "cpu"),
+        default="auto",
+        help="Torch compute device (default: auto).",
     )
     parser.add_argument(
         "--colors-per-tier",
         type=int,
-        choices=tuple(range(2, 9)),
-        default=4,
-        help="Maximum filament colors per tier, from 2 to 8 (default: 4).",
+        choices=tuple(range(2, 17)),
+        default=DEFAULT_COLORS_PER_TIER,
+        help=f"Maximum filament colors per tier, from 2 to 16 (default: {DEFAULT_COLORS_PER_TIER}).",
     )
     parser.add_argument(
         "--max-layers-per-tier",
         type=int,
-        default=120,
+        default=DEFAULT_MAX_LAYERS_PER_TIER,
         help=(
             "Layers available to each tier; optical mode may use fewer, while "
-            "geometry-first uses exactly this count (default: 120)."
+            f"geometry-first uses exactly this count (default: {DEFAULT_MAX_LAYERS_PER_TIER})."
         ),
     )
     parser.add_argument(
         "--total-layers",
         type=int,
-        default=None,
-        help="Fixed total layer count required by lookahead mapping mode.",
+        default=DEFAULT_TOTAL_LAYERS,
+        help=(
+            "Fixed total layer count used by lookahead mode and ignored by other "
+            f"mapping modes (default: {DEFAULT_TOTAL_LAYERS})."
+        ),
     )
     parser.add_argument(
         "--td-scale",
@@ -142,17 +158,14 @@ def _parse_arguments() -> argparse.Namespace:
         help="Save predicted-color and fixed-scale Delta E heatmap PNGs beside the 3MF.",
     )
     args = parser.parse_args()
+    args.output = resolve_output_file(args.input, args.output, "stratachrome", ".3mf")
     if args.mapping_mode == "lookahead":
         minimum_layers = 1 if args.tier_mode == "single" else 2
-        if args.total_layers is None:
-            parser.error("--mapping-mode lookahead requires --total-layers.")
         if args.total_layers < minimum_layers:
             parser.error(
                 f"--total-layers must be at least {minimum_layers} "
                 f"for {args.tier_mode}-tier lookahead mode."
             )
-    elif args.total_layers is not None:
-        parser.error("--total-layers is only valid with --mapping-mode lookahead.")
     return args
 
 
@@ -240,7 +253,7 @@ def main() -> int:
     )
     print(f"   Optical TD scale: {args.td_scale:g}")
 
-    if args.tier_mode == "two":
+    if args.tier_mode == "dual":
         from stratachrome.segmentation import ForegroundSegmenter, SegmentationConfig
 
         print("2. Extracting foreground matte via BiRefNet...")
@@ -312,7 +325,7 @@ def main() -> int:
             foreground=False,
             layer_count=background_layer_budget,
         )
-        if args.tier_mode == "two":
+        if args.tier_mode == "dual":
             geometry_layer_indices["foreground"] = map_tier_lightness_to_layer_indices(
                 full_lab,
                 matte,
@@ -320,7 +333,7 @@ def main() -> int:
                 layer_count=foreground_layer_budget,
             )
 
-    tier_label = "background" if args.tier_mode == "two" else "single"
+    tier_label = "background" if args.tier_mode == "dual" else "single"
     print(f"4. Selecting and optimizing {tier_label} tier colors...")
     if args.mapping_mode in {"geometry-first", "lookahead"}:
         bg_plan = plan_geometry_first_tier_colors(
@@ -350,7 +363,7 @@ def main() -> int:
     bg_schedule = bg_plan.schedule
     bg_states = list(bg_schedule.states)
 
-    if args.tier_mode == "two":
+    if args.tier_mode == "dual":
         print("5. Selecting and optimizing foreground tier colors...")
         if args.mapping_mode in {"geometry-first", "lookahead"}:
             fg_plan = plan_geometry_first_tier_colors(
@@ -458,7 +471,7 @@ def main() -> int:
                 f"  - Layer {swap.global_layer_idx:2d} @ {swap.z_height_mm:5.2f}mm -> {swap.filament_name} ({swap.tier_name})"
             )
     else:
-        print("Configured for AMS multi-material execution (no manual pauses required).")
+        print("Configured for automatic multi-material execution (no manual pauses required).")
 
     return 0
 

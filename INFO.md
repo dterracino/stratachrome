@@ -210,12 +210,13 @@ Subject to the physical FDM constraints:
 ```text
 src/stratachrome/
 ├── __init__.py          # Package initialization and exports
+├── bambu_exporter.py    # Native Bambu/Orca 3MF archive writer
+├── bambu_project.py     # Bambu project XML, settings, and filament metadata
 ├── optical_model.py     # Beer-Lambert & Kubelka-Munk forward transmission prediction
 ├── color_engine.py      # Inverse optimization engine and LUT generation
 ├── depth_mapper.py      # 2D heightfield synthesis, quantization, and batch Lab conversion
 ├── segmentation.py      # Perceptual region clustering and hue-boundary isolation
 ├── mesh_builder.py      # Watertight manifold STL mesh generation with border walls
-├── export_3mf.py        # Multipart 3MF generation with slicer filament assignments
 ├── pipeline.py          # End-to-end orchestration CLI and execution controller
 ├── segment_cli.py       # Standalone CLI for image segmentation analysis
 └── stl_test_cli.py      # Mesh inspection and verification CLI
@@ -228,7 +229,8 @@ src/stratachrome/
 * **`depth_mapper.py`:** Converts the input image into discrete $Z$-height matrices, applying spatial smoothing filters and slicing step quantizations.
 * **`segmentation.py`:** Partitions multi-subject scenes into distinct regions to permit localized filament sequences or isolated structural prints.
 * **`mesh_builder.py`:** Transforms $Z$-height arrays into watertight 3D triangle meshes featuring solid backplates, stepped planar strata, and side borders.
-* **`export_3mf.py`:** Packages triangulated meshes into standardized 3MF archives compatible with Bambu Studio, OrcaSlicer, and PrusaSlicer, preserving extruder assignments and filament metadata.
+* **`bambu_exporter.py`:** Packages triangulated meshes and swap schedules into native Bambu Studio and OrcaSlicer 3MF archives.
+* **`bambu_project.py`:** Generates project XML, printer settings, filament profiles, and automatic or manual layer-change metadata.
 * **`pipeline.py`:** Orchestrates the workflow from source image to sliced 3MF artifacts.
 
 ---

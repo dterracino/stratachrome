@@ -335,7 +335,7 @@ def build_custom_gcode_xml(
             extruder=str(slot_by_filament[incoming]),
             color=incoming[0],
             extra="",
-            gcode="tool_change" if swap_mode == "ams" else "pause_print",
+            gcode="tool_change" if swap_mode == "auto" else "pause_print",
         )
         active = incoming
 

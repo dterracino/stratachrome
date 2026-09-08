@@ -14,6 +14,12 @@ import sys
 import numpy as np
 from PIL import Image
 
+from stratachrome.cli_defaults import (
+    DEFAULT_FIRST_LAYER_HEIGHT_MM,
+    DEFAULT_MAX_DIM,
+    DEFAULT_SIZE_MM,
+)
+from stratachrome.cli_paths import resolve_output_file
 from stratachrome.mesh_builder import PhysicalDimensions, WatertightMeshBuilder, export_binary_stl
 
 
@@ -21,25 +27,42 @@ def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stratachrome: Convert an image to a manifold binary STL heightmap for verification."
     )
-    parser.add_argument("-i", "--input", type=Path, required=True, help="Input image file path.")
+    parser.add_argument("input", type=Path, help="Input image file path.")
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        default=Path("output/test_model.stl"),
-        help="Output STL path (default: output/test_model.stl).",
+        default=None,
+        help="Output STL file or directory. Defaults to output/<input-stem>_mesh.stl.",
     )
     parser.add_argument(
         "-s",
         "--size",
         type=float,
-        default=100.0,
-        help="Target physical size in mm for the maximum image dimension (default: 100.0).",
+        default=DEFAULT_SIZE_MM,
+        help=f"Target physical size in mm for the maximum image dimension (default: {DEFAULT_SIZE_MM}).",
     )
-    parser.add_argument("--max-height", type=float, default=2.4, help="Maximum Z height in mm (default: 2.4).")
-    parser.add_argument("--base-height", type=float, default=0.4, help="Solid base height in mm (default: 0.4).")
-    parser.add_argument("--max-dimension", type=int, default=400, help="Max raster dimension (default: 400).")
-    return parser.parse_args()
+    parser.add_argument(
+        "--max-height", type=float, default=2.4, help="Maximum Z height in mm (default: 2.4)."
+    )
+    parser.add_argument(
+        "--first-layer",
+        type=float,
+        default=DEFAULT_FIRST_LAYER_HEIGHT_MM,
+        help=(
+            "First layer bed-contact height in mm "
+            f"(default: {DEFAULT_FIRST_LAYER_HEIGHT_MM:.2f})."
+        ),
+    )
+    parser.add_argument(
+        "--max-dim",
+        type=int,
+        default=DEFAULT_MAX_DIM,
+        help=f"Maximum raster dimension (default: {DEFAULT_MAX_DIM}).",
+    )
+    args = parser.parse_args()
+    args.output = resolve_output_file(args.input, args.output, "mesh", ".stl")
+    return args
 
 
 def _load_normalized_lightness(path: Path, max_dim: int) -> np.ndarray:
@@ -51,7 +74,9 @@ def _load_normalized_lightness(path: Path, max_dim: int) -> np.ndarray:
         w, h = img.size
         if max(w, h) > max_dim:
             scale = max_dim / max(w, h)
-            img = img.resize((int(round(w * scale)), int(round(h * scale))), Image.Resampling.BILINEAR)
+            img = img.resize(
+                (int(round(w * scale)), int(round(h * scale))), Image.Resampling.BILINEAR
+            )
         arr = np.array(img, dtype=np.float32)
         return arr / 255.0
 
@@ -60,10 +85,12 @@ def main() -> int:
     args = _parse_arguments()
 
     try:
-        norm_l = _load_normalized_lightness(args.input, args.max_dimension)
+        norm_l = _load_normalized_lightness(args.input, args.max_dim)
     except Exception as err:
         sys.stderr.write(f"Error reading image: {err}\n")
         return 1
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
 
     rows, cols = norm_l.shape
     if cols >= rows:
@@ -75,8 +102,8 @@ def main() -> int:
 
     print(f"Loaded grid: {cols}x{rows} points -> {width_mm:.1f}mm x {height_mm:.1f}mm")
 
-    z_span = args.max_height - args.base_height
-    z_grid = args.base_height + norm_l * z_span
+    z_span = args.max_height - args.first_layer
+    z_grid = args.first_layer + norm_l * z_span
 
     dims = PhysicalDimensions(
         width_mm=width_mm,

@@ -69,17 +69,17 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         self.assertEqual((background, foreground), (13, 14))
         self.assertEqual(background + foreground, 27)
 
-    def test_lookahead_cli_requires_total_layers(self) -> None:
-        with patch("sys.argv", ["stratachrome", "-i", "input.jpg", "--mapping-mode", "lookahead"]):
-            with self.assertRaises(SystemExit):
-                _parse_arguments()
+    def test_lookahead_cli_defaults_to_twenty_seven_total_layers(self) -> None:
+        with patch("sys.argv", ["stratachrome", "input.jpg", "--mapping-mode", "lookahead"]):
+            args = _parse_arguments()
+
+        self.assertEqual(args.total_layers, 27)
 
     def test_lookahead_cli_accepts_total_layers(self) -> None:
         with patch(
             "sys.argv",
             [
                 "stratachrome",
-                "-i",
                 "input.jpg",
                 "--mapping-mode",
                 "lookahead",
@@ -92,13 +92,15 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         self.assertEqual(args.mapping_mode, "lookahead")
         self.assertEqual(args.total_layers, 27)
 
-    def test_total_layers_is_rejected_outside_lookahead_mode(self) -> None:
+    def test_total_layers_is_ignored_outside_lookahead_mode(self) -> None:
         with patch(
             "sys.argv",
-            ["stratachrome", "-i", "input.jpg", "--total-layers", "27"],
+            ["stratachrome", "input.jpg", "--total-layers", "31"],
         ):
-            with self.assertRaises(SystemExit):
-                _parse_arguments()
+            args = _parse_arguments()
+
+        self.assertEqual(args.mapping_mode, "optical")
+        self.assertEqual(args.total_layers, 31)
 
     def test_tier_masks_are_complementary(self) -> None:
         image = Image.new("RGB", (4, 2), (10, 20, 30))
@@ -195,7 +197,7 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         self.assertEqual(len(palette.filaments), 1)
         self.assertEqual(palette.filaments[0].color, "Jade White")
 
-    def test_palette_quantizes_twice_the_requested_filament_cap(self) -> None:
+    def test_palette_quantizes_twice_the_sixteen_filament_cap(self) -> None:
         image = Image.new("RGB", (24, 24), (120, 120, 120))
         matte = np.ones((24, 24), dtype=np.float32)
 
@@ -207,11 +209,11 @@ class ColorToolsIntegrationTests(unittest.TestCase):
                 image,
                 matte,
                 foreground=True,
-                color_count=4,
+                color_count=16,
             )
 
-        self.assertEqual(quantize.call_args.kwargs["color_count"], 8)
-        self.assertLessEqual(len(palette.filaments), 4)
+        self.assertEqual(quantize.call_args.kwargs["color_count"], 32)
+        self.assertLessEqual(len(palette.filaments), 16)
 
     def test_palette_prefers_a_competitive_reusable_filament(self) -> None:
         jade = self._filament("Jade White")

@@ -27,14 +27,14 @@ def export_bambu_project(
     mesh: TriangleMesh,
     swap_schedule: list[SwapEvent],
     output_path: Path,
-    swap_mode: str = "ams",
+    swap_mode: str = "auto",
     *,
     step_height_mm: float = 0.10,
     first_layer_height_mm: float = 0.20,
 ) -> None:
     """Export a Bambu project with a base filament and later tool changes."""
-    if swap_mode not in {"ams", "manual"}:
-        raise ValueError("swap_mode must be 'ams' or 'manual'.")
+    if swap_mode not in {"auto", "manual"}:
+        raise ValueError("swap_mode must be 'auto' or 'manual'.")
     if step_height_mm <= 0.0 or first_layer_height_mm <= 0.0:
         raise ValueError("Layer heights must be positive.")
 
@@ -50,9 +50,7 @@ def export_bambu_project(
         step_height_mm=step_height_mm,
         first_layer_height_mm=first_layer_height_mm,
     )
-    plate_center_x, plate_center_y = plate_center_from_settings(
-        json.loads(project_settings_config)
-    )
+    plate_center_x, plate_center_y = plate_center_from_settings(json.loads(project_settings_config))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:

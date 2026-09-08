@@ -79,8 +79,8 @@ def _quantized_tier_colors(
     color_count: int,
 ) -> tuple[DominantColor, ...]:
     """Downsample one tier and quantize it to representative RGB colors."""
-    if not 1 <= color_count <= 16:
-        raise ValueError("color_count must be between 1 and 16.")
+    if not 1 <= color_count <= 32:
+        raise ValueError("color_count must be between 1 and 32.")
     rgb_image = image.convert("RGB")
     if matte.shape != (rgb_image.height, rgb_image.width):
         raise ValueError("Image and matte dimensions must match for palette analysis.")
@@ -184,6 +184,55 @@ def build_tier_image(
     return Image.fromarray(rgba, mode="RGBA")
 
 
+def build_tier_palette_previews(
+    image: Image.Image,
+    matte: np.ndarray,
+    *,
+    foreground: bool,
+    colors_per_tier: int,
+) -> tuple[Image.Image, Image.Image]:
+    """Build a 64px tier colormap and a full-resolution quantized tier image."""
+    if not 1 <= colors_per_tier <= 16:
+        raise ValueError("colors_per_tier must be between 1 and 16.")
+
+    tier_image = build_tier_image(image, matte, foreground=foreground)
+    scale = _PALETTE_ANALYSIS_MAX_DIMENSION / max(tier_image.size)
+    small_size = (
+        max(1, round(tier_image.width * scale)),
+        max(1, round(tier_image.height * scale)),
+    )
+    colormap = tier_image.resize(small_size, Image.Resampling.NEAREST)
+    colormap_array = np.asarray(colormap, dtype=np.uint8)
+    tier_mask = colormap_array[..., 3] > 0
+    tier_pixels = colormap_array[..., :3][tier_mask]
+
+    pixel_strip = Image.fromarray(tier_pixels.reshape(1, -1, 3), mode="RGB")
+    quantized_strip = pixel_strip.quantize(
+        colors=colors_per_tier * 2,
+        method=Image.Quantize.MEDIANCUT,
+        dither=Image.Dither.NONE,
+    ).convert("RGB")
+    palette_colors = np.unique(
+        np.asarray(quantized_strip, dtype=np.uint8).reshape(-1, 3),
+        axis=0,
+    ).astype(np.int32)
+    tier_array = np.asarray(tier_image, dtype=np.uint8)
+    full_tier_mask = tier_array[..., 3] > 0
+    full_tier_pixels = tier_array[..., :3][full_tier_mask].astype(np.int32)
+    best_distances = np.full(len(full_tier_pixels), np.iinfo(np.int32).max, dtype=np.int32)
+    nearest_colors = np.empty_like(full_tier_pixels)
+    for palette_color in palette_colors:
+        distances = np.sum((full_tier_pixels - palette_color) ** 2, axis=1)
+        closer = distances < best_distances
+        best_distances[closer] = distances[closer]
+        nearest_colors[closer] = palette_color
+
+    quantized_array = tier_array.copy()
+    quantized_array[..., :3][full_tier_mask] = nearest_colors.astype(np.uint8)
+    quantized = Image.fromarray(quantized_array, mode="RGBA")
+    return colormap, quantized
+
+
 def select_tier_palette(
     image: Image.Image,
     matte: np.ndarray,
@@ -195,8 +244,8 @@ def select_tier_palette(
     new_filament_penalty: float = _NEW_FILAMENT_REUSE_PENALTY,
 ) -> TierPalette:
     """Match quantized tier colors to filaments, preferring reusable ones."""
-    if not 1 <= color_count <= 8:
-        raise ValueError("color_count must be between 1 and 8.")
+    if not 1 <= color_count <= 16:
+        raise ValueError("color_count must be between 1 and 16.")
     if new_filament_penalty < 0.0:
         raise ValueError("new_filament_penalty cannot be negative.")
     available = tuple(

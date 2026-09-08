@@ -20,6 +20,9 @@ import numpy as np
 from PIL import Image
 import torch
 
+from stratachrome.cli_defaults import DEFAULT_COLORS_PER_TIER
+from stratachrome.cli_paths import resolve_output_directory
+from stratachrome.color_engine import build_tier_palette_previews
 from stratachrome.segmentation import ForegroundSegmenter, SegmentationConfig
 
 
@@ -57,16 +60,16 @@ def _parse_arguments() -> argparse.Namespace:
         description="Stratachrome: Extract foreground and background layers from an input image."
     )
     parser.add_argument(
-        "-i", "--input",
+        "input",
         type=Path,
-        required=True,
         help="Path to the input image file.",
     )
     parser.add_argument(
-        "-o", "--output-dir",
+        "-o",
+        "--output",
         type=Path,
-        default=Path("output"),
-        help="Directory where segmented images will be saved (default: ./output).",
+        default=None,
+        help="Directory where all segmented images are saved (default: output).",
     )
     parser.add_argument(
         "--feather",
@@ -82,16 +85,38 @@ def _parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--device",
-        type=str,
-        default=None,
-        help="Compute device ('cuda', 'cpu'). Auto-detected if omitted.",
+        choices=("auto", "cuda", "cpu"),
+        default="auto",
+        help="Compute device (default: auto).",
+    )
+    parser.add_argument(
+        "--colors-per-tier",
+        type=int,
+        choices=tuple(range(2, 17)),
+        default=DEFAULT_COLORS_PER_TIER,
+        help=(
+            "Filament color cap represented by palette previews, from 2 to 16 "
+            f"(default: {DEFAULT_COLORS_PER_TIER})."
+        ),
     )
     parser.add_argument(
         "--save-matte",
         action="store_true",
         help="Also export the raw grayscale alpha matte image.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--save-quantized",
+        action="store_true",
+        help="Also export each full-resolution tier quantized to twice the filament cap.",
+    )
+    parser.add_argument(
+        "--save-colormaps",
+        action="store_true",
+        help="Also export each tier resized to a 64px maximum edge.",
+    )
+    args = parser.parse_args()
+    args.output = resolve_output_directory(args.output)
+    return args
 
 
 def _load_image(path: Path) -> Image.Image:
@@ -121,7 +146,9 @@ def _log_hardware_diagnostics(target_device: torch.device) -> None:
         mem_info = torch.cuda.get_device_properties(target_device).total_memory / (1024**3)
         print(f"[Hardware] Compute Target: CUDA -> {gpu_name} ({mem_info:.1f} GB VRAM)")
     else:
-        print("[Hardware] Compute Target: CPU (Note: transformer inference will be slower without CUDA)")
+        print(
+            "[Hardware] Compute Target: CPU (Note: transformer inference will be slower without CUDA)"
+        )
 
 
 def main() -> int:
@@ -133,7 +160,7 @@ def main() -> int:
         sys.stderr.write(f"Error loading input image: {err}\n")
         return 1
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    args.output.mkdir(parents=True, exist_ok=True)
     stem = args.input.stem
 
     config = SegmentationConfig(
@@ -145,7 +172,9 @@ def main() -> int:
     segmenter = ForegroundSegmenter(config=config)
     _log_hardware_diagnostics(segmenter.device)
 
-    print(f"[1/4] Preparing input image '{args.input.name}' ({source_image.width}x{source_image.height})...")
+    print(
+        f"[1/4] Preparing input image '{args.input.name}' ({source_image.width}x{source_image.height})..."
+    )
 
     with _status_spinner("Loading BiRefNet neural network weights into memory"):
         # Explicitly warm up / load model weights
@@ -156,18 +185,35 @@ def main() -> int:
 
     print("[3/4] Processing alpha boundaries and partitioning color plates...")
     fg_image = _apply_alpha_matte(source_image, result.matte)
-    fg_path = args.output_dir / f"{stem}_foreground.png"
+    fg_path = args.output / f"{stem}_foreground.png"
     fg_image.save(fg_path)
 
     bg_matte = 1.0 - result.matte
     bg_image = _apply_alpha_matte(source_image, bg_matte)
-    bg_path = args.output_dir / f"{stem}_background.png"
+    bg_path = args.output / f"{stem}_background.png"
     bg_image.save(bg_path)
 
     if args.save_matte:
-        matte_path = args.output_dir / f"{stem}_matte.png"
+        matte_path = args.output / f"{stem}_matte.png"
         _export_matte_preview(result.matte, matte_path)
         print(f"      - Matte layer       -> {matte_path}")
+
+    if args.save_quantized or args.save_colormaps:
+        for tier_name, foreground in (("background", False), ("foreground", True)):
+            colormap, quantized = build_tier_palette_previews(
+                source_image,
+                result.matte,
+                foreground=foreground,
+                colors_per_tier=args.colors_per_tier,
+            )
+            if args.save_colormaps:
+                colormap_path = args.output / f"{stem}_{tier_name}_colormap.png"
+                colormap.save(colormap_path)
+                print(f"      - {tier_name.title()} colormap -> {colormap_path}")
+            if args.save_quantized:
+                quantized_path = args.output / f"{stem}_{tier_name}_quantized.png"
+                quantized.save(quantized_path)
+                print(f"      - {tier_name.title()} quantized -> {quantized_path}")
 
     print(f"      - Foreground layer  -> {fg_path}")
     print(f"      - Background layer  -> {bg_path}")

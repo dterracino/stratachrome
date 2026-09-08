@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from stratachrome.bambu_exporter import export_bambu_project
 from stratachrome.color_engine import (
     FilamentMatch,
     TierColorPlan,
@@ -28,7 +29,6 @@ from stratachrome.depth_mapper import (
     TierHeightBudget,
     TwoTierDepthMapper,
 )
-from stratachrome.export_3mf import export_bambu_3mf
 from stratachrome.mesh_builder import (
     PhysicalDimensions,
     TriangleMesh,
@@ -98,5 +98,5 @@ __all__ = [
     "WatertightMeshBuilder",
     "export_binary_stl",
     # Packaging
-    "export_bambu_3mf",
+    "export_bambu_project",
 ]

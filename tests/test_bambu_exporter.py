@@ -12,7 +12,6 @@ import zipfile
 import numpy as np
 
 from stratachrome.bambu_exporter import export_bambu_project
-from stratachrome.export_3mf import export_bambu_3mf
 from stratachrome.bambu_project import NS_3MF, NS_BAMBU, NS_PRODUCTION, NS_RELS
 from stratachrome.depth_mapper import SwapEvent
 from stratachrome.mesh_builder import TriangleMesh
@@ -174,19 +173,6 @@ class BambuExporterTests(unittest.TestCase):
         self.assertEqual(settings["filament_density"], ["1.26", "1.32"])
         self.assertEqual(settings["filament_flow_ratio"], ["0.98", "0.98"])
         self.assertEqual(settings["filament_max_volumetric_speed"], ["21", "22"])
-
-    def test_legacy_public_exporter_delegates_to_native_bambu_writer(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "project.3mf"
-            export_bambu_3mf(self.mesh, self.swaps, output)
-
-            with zipfile.ZipFile(output) as archive:
-                settings = json.loads(archive.read("Metadata/project_settings.config"))
-                self.assertEqual(len(archive.namelist()), 9)
-                self.assertEqual(
-                    settings["filament_colour"],
-                    ["#000000", "#FF0000", "#FFFFFF"],
-                )
 
 
 if __name__ == "__main__":
