@@ -27,6 +27,7 @@ Stratachrome can process the full image as one relief or use **BiRefNet backgrou
 * **Conservative Surface Reduction**: Reduces coplanar regions in the XY surface while preserving the known-good watertight perimeter skirt and bottom closure.
 * **Native Bambu / Orca 3MF Packaging**: Exports Open Packaging Conventions (OPC) archives with layer changes and finish-aware Bambu PLA Basic/Matte X1C profiles.
 * **Generation Diagnostics**: Reports selected filaments, layer allocations, convergence status, CIEDE2000 error, objective score, used height levels, and final mesh size.
+* **Color Diagnostics**: Optionally saves the predicted optical color at every pixel and a fixed-scale CIEDE2000 error heatmap for comparing schedules.
 
 ---
 
@@ -160,6 +161,9 @@ stratachrome-mesh -i assets/subject.png -o output/test_mesh.stl -s 100.0 --max-h
 | `--colors-per-tier` | `4` | Maximum filament count from 2 to 8 per tier. Each 64px nearest-neighbor tier image is quantized to twice this ceiling, providing extra matching candidates; duplicate matches can still collapse to fewer filaments and foreground selection prefers reusable background colors. |
 | `--max-layers-per-tier` | `120` | Maximum total layers available to each tier. TD and perceptual fit determine how many layers are actually used. |
 | `--td-scale` | `1.0` | Positive multiplier for catalog TD values. Values above `1.0` model greater transparency and generally require more layers; values below `1.0` model greater opacity and generally require fewer layers. |
+| `--color-diagnostics` | `False` | Save `<output-stem>_color_preview.png` and `<output-stem>_delta_e_heatmap.png` beside the 3MF. |
+
+The predicted-color preview shows the simulated optical state assigned to each pixel. The heatmap compares that state with the source using CIEDE2000: black indicates zero error, progressing through blue, cyan, and yellow to red at Delta E 30 or greater. The fixed scale allows direct comparison between different palettes and schedules.
 
 ### Understanding `--td-scale`
 

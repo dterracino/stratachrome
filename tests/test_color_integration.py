@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +12,7 @@ from PIL import Image
 from color_tools import FilamentCollections
 
 import stratachrome.color_engine as color_engine
+from stratachrome.color_diagnostics import save_color_diagnostics
 from stratachrome.color_engine import (
     build_tier_image,
     extract_perceptual_lab,
@@ -368,6 +371,44 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(float(result.z_grid[0, 0]), 0.3)
+
+    def test_color_diagnostics_reconstruct_exact_optical_states(self) -> None:
+        black = self._filament("Black")
+        white = self._filament("Jade White")
+        states = simulate_tier_stack(
+            assignments_from_layer_counts((black, white), (1, 1)),
+            total_layers=2,
+        )
+        targets = np.asarray([[states[0].simulated_lab, states[1].simulated_lab]])
+
+        diagnostics = TwoTierDepthMapper(states, states).generate_color_diagnostics(
+            targets,
+            targets,
+            np.asarray([[0.0, 1.0]], dtype=np.float32),
+        )
+
+        np.testing.assert_array_equal(
+            diagnostics.preview_rgb,
+            np.asarray([[states[0].simulated_rgb, states[1].simulated_rgb]], dtype=np.uint8),
+        )
+        np.testing.assert_allclose(diagnostics.delta_e, 0.0, atol=1e-5)
+        self.assertAlmostEqual(diagnostics.mean_delta_e, 0.0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            preview_path, heatmap_path = save_color_diagnostics(
+                diagnostics,
+                Path(directory) / "sample.3mf",
+            )
+
+            self.assertEqual(preview_path.name, "sample_color_preview.png")
+            self.assertEqual(heatmap_path.name, "sample_delta_e_heatmap.png")
+            with Image.open(preview_path) as preview:
+                np.testing.assert_array_equal(np.asarray(preview), diagnostics.preview_rgb)
+            with Image.open(heatmap_path) as heatmap:
+                np.testing.assert_array_equal(
+                    np.asarray(heatmap),
+                    np.zeros((1, 2, 3), dtype=np.uint8),
+                )
 
     def test_single_tier_depth_maps_lightness_monotonically_to_layer_grid(self) -> None:
         black = self._filament("Black")

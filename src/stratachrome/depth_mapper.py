@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
+from color_tools import delta_e_2000_array
 
 from stratachrome.optical_model import ColorLayerMapper, LayerOpticalState
 
@@ -100,6 +101,17 @@ class HeightmapResult:
     swap_schedule: list[SwapEvent]
 
 
+@dataclass(frozen=True)
+class ColorDiagnosticResult:
+    """Predicted printed colors and their perceptual error against the source."""
+
+    preview_rgb: np.ndarray
+    delta_e: np.ndarray
+    mean_delta_e: float
+    percentile_95_delta_e: float
+    max_delta_e: float
+
+
 def _validate_image_dimensions(
     bg_lab: np.ndarray,
     fg_lab: np.ndarray,
@@ -130,12 +142,12 @@ def _build_tier_height_array(
     return heights
 
 
-def _map_lightness_to_elevations(
+def _map_lightness_to_layer_indices(
     target_lab: np.ndarray,
-    height_lut: np.ndarray,
+    layer_count: int,
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Map tier-local CIELAB L* values to discrete printable elevations."""
+    """Map tier-local CIELAB L* values to discrete layer indices."""
     lightness = np.asarray(target_lab[..., 0], dtype=np.float32)
     samples = lightness if mask is None else lightness[mask]
     if samples.size == 0:
@@ -147,8 +159,40 @@ def _map_lightness_to_elevations(
         layer_indices = np.zeros(lightness.shape, dtype=np.int32)
     else:
         normalized = np.clip((lightness - minimum) / (maximum - minimum), 0.0, 1.0)
-        layer_indices = np.rint(normalized * (len(height_lut) - 1)).astype(np.int32)
+        layer_indices = np.rint(normalized * (layer_count - 1)).astype(np.int32)
+    return layer_indices
+
+
+def _map_lightness_to_elevations(
+    target_lab: np.ndarray,
+    height_lut: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Map tier-local CIELAB L* values to discrete printable elevations."""
+    layer_indices = _map_lightness_to_layer_indices(target_lab, len(height_lut), mask)
     return cast(np.ndarray, height_lut[layer_indices])
+
+
+def _diagnostics_from_layer_indices(
+    target_lab: np.ndarray,
+    layer_indices: np.ndarray,
+    states: list[LayerOpticalState],
+) -> ColorDiagnosticResult:
+    """Build predicted RGB and Delta E arrays from selected optical states."""
+    state_lab = np.asarray([state.simulated_lab for state in states], dtype=np.float64)
+    state_rgb = np.asarray([state.simulated_rgb for state in states], dtype=np.uint8)
+    predicted_lab = state_lab[layer_indices]
+    delta_e = np.asarray(
+        delta_e_2000_array(np.asarray(target_lab, dtype=np.float64), predicted_lab),
+        dtype=np.float32,
+    )
+    return ColorDiagnosticResult(
+        preview_rgb=state_rgb[layer_indices],
+        delta_e=delta_e,
+        mean_delta_e=float(np.mean(delta_e)),
+        percentile_95_delta_e=float(np.percentile(delta_e, 95.0)),
+        max_delta_e=float(np.max(delta_e)),
+    )
 
 
 def _map_zone_to_elevations(
@@ -300,6 +344,28 @@ class TwoTierDepthMapper:
             swap_schedule=full_schedule,
         )
 
+    def generate_color_diagnostics(
+        self,
+        bg_lab: np.ndarray,
+        fg_lab: np.ndarray,
+        matte: np.ndarray,
+    ) -> ColorDiagnosticResult:
+        """Predict the realizable optical state selected for every source pixel."""
+        _validate_image_dimensions(bg_lab, fg_lab, matte)
+        foreground_mask = matte >= 0.5
+        bg_indices = self._bg_mapper.map_image_lab_to_layers(bg_lab)
+        fg_indices = self._fg_mapper.map_image_lab_to_layers(fg_lab)
+        target_lab = np.where(foreground_mask[..., None], fg_lab, bg_lab)
+
+        bg_state_count = len(self._bg_states)
+        combined_states = self._bg_states + self._fg_states
+        combined_indices = np.where(
+            foreground_mask,
+            fg_indices + bg_state_count,
+            bg_indices,
+        )
+        return _diagnostics_from_layer_indices(target_lab, combined_indices, combined_states)
+
 
 class SingleTierDepthMapper:
     """Generate one lightness-driven relief and its filament schedule."""
@@ -342,3 +408,10 @@ class SingleTierDepthMapper:
             max_height_mm=round(float(np.max(z_grid)), 4),
             swap_schedule=swaps,
         )
+
+    def generate_color_diagnostics(self, lab_image: np.ndarray) -> ColorDiagnosticResult:
+        """Predict colors for the same lightness-selected states used by geometry."""
+        if lab_image.ndim != 3 or lab_image.shape[-1] != 3:
+            raise ValueError("lab_image must have shape (height, width, 3).")
+        layer_indices = _map_lightness_to_layer_indices(lab_image, len(self._states))
+        return _diagnostics_from_layer_indices(lab_image, layer_indices, self._states)

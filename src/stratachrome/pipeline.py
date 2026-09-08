@@ -20,6 +20,7 @@ from stratachrome.color_engine import (
     extract_perceptual_lab,
     plan_tier_colors,
 )
+from stratachrome.color_diagnostics import DELTA_E_HEATMAP_MAX, save_color_diagnostics
 from stratachrome.depth_mapper import SingleTierDepthMapper, TwoTierDepthMapper
 from stratachrome.bambu_exporter import export_bambu_project
 from stratachrome.mesh_builder import PhysicalDimensions, WatertightMeshBuilder
@@ -112,6 +113,11 @@ def _parse_arguments() -> argparse.Namespace:
             "during optical simulation (default: 1.0)."
         ),
     )
+    parser.add_argument(
+        "--color-diagnostics",
+        action="store_true",
+        help="Save predicted-color and fixed-scale Delta E heatmap PNGs beside the 3MF.",
+    )
     return parser.parse_args()
 
 
@@ -193,7 +199,10 @@ def main() -> int:
     print(
         f"   Vertical resolution: First layer={args.first_layer:.2f}mm, Step={args.layer_height:.2f}mm"
     )
-    print(f"   Swap mode: {args.swap_mode.upper()} | Tier mode: {args.tier_mode.upper()}")
+    print(
+        f"   Swap mode: {args.swap_mode.upper()} | Tier mode: {args.tier_mode.upper()} "
+        "| Mapping mode: OPTICAL"
+    )
     print(f"   Optical TD scale: {args.td_scale:g}")
 
     if args.tier_mode == "two":
@@ -252,6 +261,11 @@ def main() -> int:
             first_layer_height_mm=args.first_layer,
         )
         height_result = depth_mapper.generate_heightmap(full_lab, full_lab, matte)
+        color_diagnostics = (
+            depth_mapper.generate_color_diagnostics(full_lab, full_lab, matte)
+            if args.color_diagnostics
+            else None
+        )
     else:
         _print_tier_schedule("Single", bg_schedule, args.max_layers_per_tier)
         print("5. Generating single-tier L* heightmap...")
@@ -261,10 +275,29 @@ def main() -> int:
             first_layer_height_mm=args.first_layer,
         )
         height_result = single_mapper.generate_heightmap(full_lab)
+        color_diagnostics = (
+            single_mapper.generate_color_diagnostics(full_lab)
+            if args.color_diagnostics
+            else None
+        )
     print(
         f"   Max height: {height_result.max_height_mm:.2f}mm ({height_result.total_layers} layers)"
     )
     _print_height_usage(height_result.z_grid)
+
+    if color_diagnostics is not None:
+        preview_path, heatmap_path = save_color_diagnostics(color_diagnostics, args.output)
+        print(
+            "   Color error: "
+            f"mean={color_diagnostics.mean_delta_e:.2f}, "
+            f"95th percentile={color_diagnostics.percentile_95_delta_e:.2f}, "
+            f"max={color_diagnostics.max_delta_e:.2f}"
+        )
+        print(f"   Predicted-color preview: {preview_path}")
+        print(
+            f"   Delta E heatmap (saturates at {DELTA_E_HEATMAP_MAX:g}): "
+            f"{heatmap_path}"
+        )
 
     print("7. Building watertight manifold triangle mesh...")
     dimensions = PhysicalDimensions(width_mm=width_mm, height_mm=height_mm, base_floor_z_mm=0.0)
