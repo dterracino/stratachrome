@@ -164,7 +164,7 @@ class ColorToolsIntegrationTests(unittest.TestCase):
         )
 
         selected = {filament.color for filament in palette.filaments}
-        self.assertEqual(selected, {"Black", "Ash Gray", "Jade White"})
+        self.assertEqual(selected, {"Black", "Dark Gray", "Jade White"})
         self.assertEqual(palette.filaments[0].color, "Black")
 
     def test_palette_selection_can_use_eight_unique_colors(self) -> None:

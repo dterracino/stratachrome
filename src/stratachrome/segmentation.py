@@ -65,7 +65,7 @@ class SegmentationResult:
 
 def _resolve_compute_device(requested: Optional[str]) -> torch.device:
     """Determines the target torch device based on availability and request."""
-    if requested not in {None, "auto"}:
+    if requested is not None and requested != "auto":
         return torch.device(requested)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

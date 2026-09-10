@@ -15,6 +15,11 @@ from color_tools import (
 )
 from color_tools.image import DominantColor
 
+from stratachrome.color_algorithms import (
+    DEFAULT_COLOR_ALGORITHM,
+    ColorPaletteAlgorithm,
+    get_color_algorithm,
+)
 from stratachrome.optical_model import (
     OptimizedTierSchedule,
     optimize_geometry_first_schedule,
@@ -115,14 +120,21 @@ def _quantized_tier_colors(
         raise RuntimeError("Pillow did not return the quantized tier palette.")
 
     targets: list[DominantColor] = []
-    for population_count, palette_index in sorted(color_counts, reverse=True):
+    sorted_counts = sorted(color_counts, key=lambda item: item[0], reverse=True)
+    for population_count, palette_value in sorted_counts:
+        if not isinstance(palette_value, int):
+            raise RuntimeError("Pillow returned a non-indexed quantized palette.")
+        palette_index = palette_value
         offset = palette_index * 3
-        rgb = tuple(int(value) for value in palette_values[offset : offset + 3])
+        channels = palette_values[offset : offset + 3]
+        if len(channels) != 3:
+            raise RuntimeError("Pillow returned an incomplete quantized palette.")
+        rgb = (int(channels[0]), int(channels[1]), int(channels[2]))
         population = population_count / len(tier_pixels)
         targets.append(
             DominantColor(
-                rgb=rgb,  # type: ignore[arg-type]
-                lab=rgb_to_lab(rgb),  # type: ignore[arg-type]
+                rgb=rgb,
+                lab=rgb_to_lab(rgb),
                 population=population,
                 dominance=population,
                 global_salience=0.0,
@@ -134,6 +146,20 @@ def _quantized_tier_colors(
             )
         )
     return tuple(targets)
+
+
+def extract_image_palette(
+    image: Image.Image,
+    color_count: int,
+) -> tuple[DominantColor, ...]:
+    """Quantize an entire image using the same analysis path as tier planning."""
+    matte = np.zeros((image.height, image.width), dtype=np.float32)
+    return _quantized_tier_colors(
+        image,
+        matte,
+        foreground=False,
+        color_count=color_count,
+    )
 
 
 def extract_perceptual_lab(image: Image.Image | np.ndarray) -> np.ndarray:
@@ -242,8 +268,9 @@ def select_tier_palette(
     collection: Sequence[FilamentRecord] | None = None,
     preferred_filaments: Sequence[FilamentRecord] = (),
     new_filament_penalty: float = _NEW_FILAMENT_REUSE_PENALTY,
+    color_algorithm: ColorPaletteAlgorithm | None = None,
 ) -> TierPalette:
-    """Match quantized tier colors to filaments, preferring reusable ones."""
+    """Generate adjusted tier colors and match them to printable filaments."""
     if not 1 <= color_count <= 16:
         raise ValueError("color_count must be between 1 and 16.")
     if new_filament_penalty < 0.0:
@@ -259,12 +286,14 @@ def select_tier_palette(
     if not available:
         raise ValueError("The filament search collection has no records with TD values.")
 
-    targets = _quantized_tier_colors(
+    algorithm = color_algorithm or get_color_algorithm(DEFAULT_COLOR_ALGORITHM)
+    generated_palette = algorithm.generate_palette(
         image,
-        matte,
+        color_count * 2,
+        matte=matte,
         foreground=foreground,
-        color_count=color_count * 2,
     )
+    targets = generated_palette.as_dominant_colors()
     palette = FilamentPalette(list(available))
     available_ids = {filament.id for filament in available}
     preferred_ids = {
@@ -378,6 +407,7 @@ def plan_tier_colors(
     collection: Sequence[FilamentRecord] | None = None,
     preferred_filaments: Sequence[FilamentRecord] = (),
     new_filament_penalty: float = _NEW_FILAMENT_REUSE_PENALTY,
+    color_algorithm: ColorPaletteAlgorithm | None = None,
 ) -> TierColorPlan:
     """Quantize a tier, match its filaments, and optimize physical thickness."""
     targets = sample_tier_lab(
@@ -393,6 +423,7 @@ def plan_tier_colors(
         collection=collection,
         preferred_filaments=preferred_filaments,
         new_filament_penalty=new_filament_penalty,
+        color_algorithm=color_algorithm,
     )
 
     matches = list(candidate_palette.matches)
@@ -444,6 +475,7 @@ def plan_geometry_first_tier_colors(
     collection: Sequence[FilamentRecord] | None = None,
     preferred_filaments: Sequence[FilamentRecord] = (),
     new_filament_penalty: float = _NEW_FILAMENT_REUSE_PENALTY,
+    color_algorithm: ColorPaletteAlgorithm | None = None,
 ) -> TierColorPlan:
     """Fit movable filament boundaries to a fixed geometry layer grid."""
     targets, target_layers = sample_tier_lab_with_layers(
@@ -460,6 +492,7 @@ def plan_geometry_first_tier_colors(
         collection=collection,
         preferred_filaments=preferred_filaments,
         new_filament_penalty=new_filament_penalty,
+        color_algorithm=color_algorithm,
     )
 
     matches = list(candidate_palette.matches)

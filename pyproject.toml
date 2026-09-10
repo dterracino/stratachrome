@@ -58,6 +58,7 @@ dev = [
 
 [project.scripts]
 stratachrome = "stratachrome.pipeline:main"
+stratachrome-color = "stratachrome.color_cli:main"
 stratachrome-segment = "stratachrome.segment_cli:main"
 stratachrome-mesh = "stratachrome.stl_test_cli:main"
 

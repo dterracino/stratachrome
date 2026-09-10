@@ -26,6 +26,11 @@ from stratachrome.cli_defaults import (
     DEFAULT_TOTAL_LAYERS,
 )
 from stratachrome.cli_paths import resolve_output_file
+from stratachrome.color_algorithms import (
+    COLOR_ALGORITHM_NAMES,
+    DEFAULT_COLOR_ALGORITHM,
+    get_color_algorithm,
+)
 from stratachrome.color_engine import (
     FilamentMatch,
     TierPalette,
@@ -119,6 +124,15 @@ def _parse_arguments() -> argparse.Namespace:
         choices=("auto", "cuda", "cpu"),
         default="auto",
         help="Torch compute device (default: auto).",
+    )
+    parser.add_argument(
+        "--color-algorithm",
+        choices=COLOR_ALGORITHM_NAMES,
+        default=DEFAULT_COLOR_ALGORITHM,
+        help=(
+            "Dominant-color extraction used before shared LCh redistribution "
+            f"and TD allocation (default: {DEFAULT_COLOR_ALGORITHM})."
+        ),
     )
     parser.add_argument(
         "--colors-per-tier",
@@ -297,6 +311,8 @@ def main() -> int:
         f"| Mapping mode: {args.mapping_mode.upper()}"
     )
     print(f"   Optical TD scale: {args.td_scale:g}")
+    color_algorithm = get_color_algorithm(args.color_algorithm)
+    print(f"   Color algorithm: {color_algorithm.display_name}")
 
     if args.tier_mode == "dual":
         from stratachrome.segmentation import ForegroundSegmenter, SegmentationConfig
@@ -329,6 +345,7 @@ def main() -> int:
                 first_layer_height_mm=args.first_layer,
                 max_layers_per_tier=args.total_layers,
                 td_scale=args.td_scale,
+                color_algorithm=color_algorithm,
             )
             lookahead_bg_states = list(lookahead_bg_plan.schedule.states)
             lookahead_fg_plan = plan_tier_colors(
@@ -343,6 +360,7 @@ def main() -> int:
                 max_layers_per_tier=args.total_layers,
                 td_scale=args.td_scale,
                 preferred_filaments=lookahead_bg_plan.palette.filaments,
+                color_algorithm=color_algorithm,
             )
             background_demand = len(lookahead_bg_plan.schedule.states)
             foreground_demand = len(lookahead_fg_plan.schedule.states)
@@ -392,6 +410,7 @@ def main() -> int:
             step_height_mm=args.layer_height,
             first_layer_height_mm=args.first_layer,
             td_scale=args.td_scale,
+            color_algorithm=color_algorithm,
         )
     else:
         bg_plan = plan_tier_colors(
@@ -404,6 +423,7 @@ def main() -> int:
             first_layer_height_mm=args.first_layer,
             max_layers_per_tier=args.max_layers_per_tier,
             td_scale=args.td_scale,
+            color_algorithm=color_algorithm,
         )
     bg_schedule = bg_plan.schedule
     bg_states = list(bg_schedule.states)
@@ -432,6 +452,7 @@ def main() -> int:
                 initial_substrate_lab=bg_states[-1].simulated_lab,
                 td_scale=args.td_scale,
                 preferred_filaments=bg_plan.palette.filaments,
+                color_algorithm=color_algorithm,
             )
         else:
             fg_plan = plan_tier_colors(
@@ -446,6 +467,7 @@ def main() -> int:
                 max_layers_per_tier=args.max_layers_per_tier,
                 td_scale=args.td_scale,
                 preferred_filaments=bg_plan.palette.filaments,
+                color_algorithm=color_algorithm,
             )
         fg_schedule = fg_plan.schedule
         fg_states = list(fg_schedule.states)

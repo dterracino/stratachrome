@@ -49,6 +49,32 @@ class WatertightMeshBuilderTests(unittest.TestCase):
             self.assertGreater(float(np.sum(height_areas)), 49.0)
             self.assertLessEqual(float(np.sum(height_areas)), 50.0)
 
+    def test_height_changes_use_exact_vertical_pixel_boundaries(self) -> None:
+        z_grid = np.asarray([[0.2, 0.6]], dtype=np.float32)
+        mesh = WatertightMeshBuilder(PhysicalDimensions(20.0, 10.0)).build_mesh(z_grid)
+        triangles = mesh.vertices[mesh.faces]
+
+        constant_x = np.all(
+            np.isclose(triangles[:, :, 0], triangles[:, :1, 0]),
+            axis=1,
+        )
+        constant_y = np.all(
+            np.isclose(triangles[:, :, 1], triangles[:, :1, 1]),
+            axis=1,
+        )
+        constant_z = np.all(
+            np.isclose(triangles[:, :, 2], triangles[:, :1, 2]),
+            axis=1,
+        )
+        self.assertTrue(np.all(constant_x | constant_y | constant_z))
+
+        internal_wall = triangles[
+            constant_x & np.all(np.isclose(triangles[:, :, 0], 10.0), axis=1) & ~constant_z
+        ]
+        self.assertGreater(len(internal_wall), 0)
+        self.assertAlmostEqual(float(internal_wall[:, :, 2].min()), 0.2, places=6)
+        self.assertAlmostEqual(float(internal_wall[:, :, 2].max()), 0.6, places=6)
+
     def test_mesh_is_strictly_two_manifold(self) -> None:
         z_grid = np.asarray([[0.2, 0.6, 0.2], [0.7, 0.3, 0.8]], dtype=np.float32)
         mesh = WatertightMeshBuilder(PhysicalDimensions(30.0, 20.0)).build_mesh(z_grid)
@@ -114,6 +140,36 @@ class WatertightMeshBuilderTests(unittest.TestCase):
             message for message in messages if message.startswith("Reducing plateau elevation")
         ]
         self.assertLessEqual(len(elevation_messages), 22)
+
+    def test_random_terraces_have_only_axis_aligned_faces_and_two_owned_edges(self) -> None:
+        rng = np.random.default_rng(7)
+        levels = np.asarray([0.2, 0.3, 0.4, 0.5, 0.6], dtype=np.float32)
+
+        for _ in range(20):
+            z_grid = rng.choice(levels, size=(8, 11))
+            mesh = WatertightMeshBuilder(PhysicalDimensions(22.0, 16.0)).build_mesh(z_grid)
+            triangles = mesh.vertices[mesh.faces]
+            axis_aligned = np.stack(
+                [
+                    np.all(np.isclose(triangles[:, :, axis], triangles[:, :1, axis]), axis=1)
+                    for axis in range(3)
+                ],
+                axis=1,
+            )
+            self.assertTrue(np.all(np.any(axis_aligned, axis=1)))
+
+            edges = np.sort(
+                np.vstack(
+                    (
+                        mesh.faces[:, [0, 1]],
+                        mesh.faces[:, [1, 2]],
+                        mesh.faces[:, [2, 0]],
+                    )
+                ),
+                axis=1,
+            )
+            _, edge_use_counts = np.unique(edges, axis=0, return_counts=True)
+            np.testing.assert_array_equal(edge_use_counts, np.full_like(edge_use_counts, 2))
 
 
 if __name__ == "__main__":

@@ -14,12 +14,86 @@ import numpy as np
 from PIL import Image
 
 import stratachrome.segment_cli as segment_cli
+import stratachrome.color_cli as color_cli
+from stratachrome.color_cli import _parse_arguments as parse_color_arguments
 from stratachrome.pipeline import _parse_arguments as parse_main_arguments
 from stratachrome.segment_cli import _parse_arguments as parse_segment_arguments
 from stratachrome.stl_test_cli import _parse_arguments as parse_mesh_arguments
 
 
 class CliConsistencyTests(unittest.TestCase):
+    def test_color_cli_accepts_positional_input(self) -> None:
+        with patch("sys.argv", ["stratachrome-color", "images/photo.jpg"]):
+            args = parse_color_arguments()
+
+        self.assertEqual(args.input, Path("images/photo.jpg"))
+        self.assertEqual(args.output, Path("output/photo_colors.png"))
+        self.assertEqual(args.colors, 8)
+
+    def test_color_cli_writes_original_and_remapped_palette_png(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "photo.png"
+            output_path = Path(temp_dir) / "comparison.png"
+            image = Image.new("RGB", (32, 32))
+            pixels = np.asarray(image).copy()
+            pixels[:16, :16] = (10, 20, 30)
+            pixels[:16, 16:] = (220, 40, 60)
+            pixels[16:, :16] = (40, 180, 220)
+            pixels[16:, 16:] = (240, 230, 90)
+            Image.fromarray(pixels).save(input_path)
+            output = StringIO()
+
+            with (
+                patch.object(
+                    color_cli,
+                    "_parse_arguments",
+                    return_value=Namespace(
+                        input=input_path,
+                        output=output_path,
+                        colors=4,
+                    ),
+                ),
+                patch("sys.stdout", output),
+            ):
+                exit_code = color_cli.main()
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output_path.is_file())
+            median_cut_path = output_path.with_name("comparison_64px.png")
+            kmeans_path = output_path.with_name("comparison_kmeans.png")
+            self.assertTrue(median_cut_path.is_file())
+            self.assertTrue(kmeans_path.is_file())
+            self.assertIn(str(output_path), output.getvalue())
+            self.assertIn("[1/9] Loading image", output.getvalue())
+            self.assertIn("[4/9] Generating and redistributing 4", output.getvalue())
+            self.assertIn("[9/9] Saving three PNG files", output.getvalue())
+            with Image.open(output_path) as comparison:
+                self.assertEqual(comparison.mode, "RGB")
+                self.assertGreaterEqual(comparison.width, 640)
+                self.assertGreater(comparison.height, 350)
+            with Image.open(median_cut_path) as median_cut:
+                self.assertEqual(median_cut.size, image.size)
+            with Image.open(kmeans_path) as kmeans:
+                self.assertEqual(kmeans.size, image.size)
+
+    def test_color_cli_rejects_missing_input(self) -> None:
+        with (
+            patch.object(
+                color_cli,
+                "_parse_arguments",
+                return_value=Namespace(
+                    input=Path("missing.png"),
+                    output=Path("unused.png"),
+                    colors=8,
+                ),
+            ),
+            patch("sys.stderr", new_callable=StringIO) as error_output,
+        ):
+            exit_code = color_cli.main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Input image not found", error_output.getvalue())
+
     def test_geometry_clis_share_equivalent_defaults(self) -> None:
         with patch("sys.argv", ["stratachrome", "input.png"]):
             main_args = parse_main_arguments()
@@ -38,6 +112,7 @@ class CliConsistencyTests(unittest.TestCase):
             args = parse_main_arguments()
 
         self.assertEqual(args.colors_per_tier, 4)
+        self.assertEqual(args.color_algorithm, "median-cut")
         self.assertEqual(args.tier_mode, "dual")
         self.assertEqual(args.swap_mode, "auto")
         self.assertEqual(args.device, "auto")
@@ -49,6 +124,15 @@ class CliConsistencyTests(unittest.TestCase):
             args = parse_main_arguments()
 
         self.assertEqual(args.colors_per_tier, 16)
+
+    def test_main_accepts_kmeans_color_algorithm(self) -> None:
+        with patch(
+            "sys.argv",
+            ["stratachrome", "input.png", "--color-algorithm", "kmeans"],
+        ):
+            args = parse_main_arguments()
+
+        self.assertEqual(args.color_algorithm, "kmeans")
 
     def test_segment_uses_canonical_output_destination(self) -> None:
         with patch(

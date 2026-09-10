@@ -8,7 +8,7 @@ background via BiRefNet, builds watertight meshes, and exports Bambu/Orca 3MF.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from stratachrome.bambu_exporter import export_bambu_project
 from stratachrome.color_engine import (
@@ -44,6 +44,14 @@ from stratachrome.optical_model import (
     optimize_tier_schedule,
     simulate_tier_stack,
 )
+
+if TYPE_CHECKING:
+    from stratachrome.segmentation import (
+        ForegroundSegmenter,
+        SegmentationConfig,
+        SegmentationResult,
+        partition_lightness_channels,
+    )
 
 __version__ = "0.1.0"
 

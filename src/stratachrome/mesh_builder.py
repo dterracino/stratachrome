@@ -1,10 +1,10 @@
-"""Build flat-pixel relief meshes and export binary STL files."""
+"""Build exact stepped relief meshes and export binary STL files."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 import numpy as np
 from scipy import ndimage
@@ -46,130 +46,107 @@ class TriangleMesh:
         return int(self.faces.shape[0])
 
 
-def _flat_cell_samples(length_mm: float, count: int) -> np.ndarray:
-    """Return two inset coordinates per pixel with sub-nozzle transition gaps."""
-    pixel_size = length_mm / count
-    float32_guard = float(np.spacing(np.float32(length_mm))) * 8.0
-    inset = min(pixel_size * 0.1, max(pixel_size * 0.001, float32_guard))
+class _MeshAssembler:
+    """Weld exact grid/height intersections while accumulating oriented faces."""
 
-    starts = np.arange(count, dtype=np.float64) * pixel_size
-    stops = starts + pixel_size
-    starts[1:] += inset
-    stops[:-1] -= inset
-    samples = np.column_stack((starts, stops)).ravel().astype(np.float32)
-    if np.any(np.diff(samples) <= 0.0):
-        raise ValueError("Pixel resolution is too high for stable float32 mesh coordinates.")
-    return samples
+    def __init__(self, x_coords: np.ndarray, y_coords: np.ndarray) -> None:
+        self._x_coords = x_coords
+        self._y_coords = y_coords
+        self._vertex_indices: dict[tuple[int, int, float], int] = {}
+        self.vertices: list[tuple[float, float, float]] = []
+        self.faces: list[tuple[int, int, int]] = []
 
+    def grid_vertex(self, row: int, col: int, z: float) -> int:
+        key = (row, col, z)
+        existing = self._vertex_indices.get(key)
+        if existing is not None:
+            return existing
+        index = len(self.vertices)
+        self._vertex_indices[key] = index
+        self.vertices.append((float(self._x_coords[col]), float(self._y_coords[row]), z))
+        return index
 
-def _grid_surface_faces(rows: int, cols: int) -> np.ndarray:
-    """Triangulate a regular vertex grid with upward CCW winding."""
-    row_ids, col_ids = np.indices((rows - 1, cols - 1), dtype=np.int64)
-    lower_left = row_ids * cols + col_ids
-    lower_right = lower_left + 1
-    upper_left = lower_left + cols
-    upper_right = upper_left + 1
-    return np.vstack(
-        (
-            np.column_stack((lower_left.ravel(), lower_right.ravel(), upper_left.ravel())),
-            np.column_stack((lower_right.ravel(), upper_right.ravel(), upper_left.ravel())),
+    def loose_vertex(self, x: float, y: float, z: float) -> int:
+        index = len(self.vertices)
+        self.vertices.append((x, y, z))
+        return index
+
+    def oriented_face(
+        self,
+        first: int,
+        second: int,
+        third: int,
+        expected_normal: tuple[float, float, float],
+    ) -> None:
+        points = np.asarray(
+            (self.vertices[first], self.vertices[second], self.vertices[third]),
+            dtype=np.float64,
         )
-    )
+        normal = np.cross(points[1] - points[0], points[2] - points[0])
+        if float(np.dot(normal, expected_normal)) < 0.0:
+            second, third = third, second
+            normal = -normal
+        if float(np.linalg.norm(normal)) == 0.0:
+            raise RuntimeError("Exact stepped mesh construction produced a degenerate triangle.")
+        self.faces.append((first, second, third))
 
 
 def _component_boundary_vertices(mask: np.ndarray) -> np.ndarray:
-    """Return the grid vertices on the boundary of a 4-connected cell mask."""
+    """Return every grid vertex on the boundary of a 4-connected cell mask."""
     boundary = np.zeros((mask.shape[0] + 1, mask.shape[1] + 1), dtype=bool)
     above = np.pad(mask[:-1, :], ((1, 0), (0, 0)))
     below = np.pad(mask[1:, :], ((0, 1), (0, 0)))
     left = np.pad(mask[:, :-1], ((0, 0), (1, 0)))
     right = np.pad(mask[:, 1:], ((0, 0), (0, 1)))
 
-    top_edges = mask & ~above
-    bottom_edges = mask & ~below
-    left_edges = mask & ~left
-    right_edges = mask & ~right
-    row_ids, col_ids = np.nonzero(top_edges)
+    row_ids, col_ids = np.nonzero(mask & ~above)
     boundary[row_ids, col_ids] = True
     boundary[row_ids, col_ids + 1] = True
-    row_ids, col_ids = np.nonzero(bottom_edges)
+    row_ids, col_ids = np.nonzero(mask & ~below)
     boundary[row_ids + 1, col_ids] = True
     boundary[row_ids + 1, col_ids + 1] = True
-    row_ids, col_ids = np.nonzero(left_edges)
+    row_ids, col_ids = np.nonzero(mask & ~left)
     boundary[row_ids, col_ids] = True
     boundary[row_ids + 1, col_ids] = True
-    row_ids, col_ids = np.nonzero(right_edges)
+    row_ids, col_ids = np.nonzero(mask & ~right)
     boundary[row_ids, col_ids + 1] = True
     boundary[row_ids + 1, col_ids + 1] = True
-
     return np.argwhere(boundary)
 
 
-def _reduced_grid_surface_faces(
+def _add_top_surfaces(
+    assembler: _MeshAssembler,
     heights: np.ndarray,
-    progress: MeshProgressCallback | None = None,
-) -> np.ndarray:
-    """Triangulate connected coplanar XY regions using boundary vertices only."""
-    rows, cols = heights.shape
-    upper_left = heights[:-1, :-1]
-    flat_cells = (
-        (upper_left == heights[:-1, 1:])
-        & (upper_left == heights[1:, :-1])
-        & (upper_left == heights[1:, 1:])
-    )
-    height_values, height_ranks = np.unique(upper_left, return_inverse=True)
-    flat_ranks = np.where(flat_cells, height_ranks.reshape(upper_left.shape), -1)
+    progress: MeshProgressCallback | None,
+) -> None:
+    """Triangulate same-height pixel regions using their exact grid boundaries."""
+    height_values = np.unique(heights)
+    report_stride = max(1, int(np.ceil(len(height_values) / 20)))
 
-    reduced_cells = np.zeros_like(flat_cells)
-    reduced_face_chunks: list[np.ndarray] = []
-
-    core_rank = flat_ranks[:-1, :-1]
-    reducible_cores = (
-        (core_rank >= 0)
-        & (core_rank == flat_ranks[:-1, 1:])
-        & (core_rank == flat_ranks[1:, :-1])
-        & (core_rank == flat_ranks[1:, 1:])
-    )
-    reducible_ranks = np.unique(core_rank[reducible_cores])
-    elevation_report_stride = max(1, int(np.ceil(len(reducible_ranks) / 20)))
-
-    for elevation_number, rank in enumerate(reducible_ranks, start=1):
-        report_elevation = (
-            elevation_number == 1
-            or elevation_number == len(reducible_ranks)
-            or (elevation_number - 1) % elevation_report_stride == 0
-        )
-        if progress is not None and report_elevation:
+    for height_number, height in enumerate(height_values, start=1):
+        if progress is not None and (
+            height_number == 1
+            or height_number == len(height_values)
+            or (height_number - 1) % report_stride == 0
+        ):
             progress(
-                f"Reducing plateau elevation {elevation_number}/{len(reducible_ranks)} "
-                f"({float(height_values[rank]):.2f} mm)..."
+                f"Reducing plateau elevation {height_number}/{len(height_values)} "
+                f"({float(height):.2f} mm)..."
             )
-        rank_mask = flat_ranks == rank
-        labels, component_count = ndimage.label(rank_mask)
-        if component_count == 0:
-            continue
-        rank_cores = (
-            rank_mask[:-1, :-1]
-            & rank_mask[:-1, 1:]
-            & rank_mask[1:, :-1]
-            & rank_mask[1:, 1:]
+
+        labels, component_count = cast(
+            tuple[np.ndarray, int],
+            ndimage.label(heights == height),
         )
-        candidate_labels = np.unique(labels[:-1, :-1][rank_cores])
         component_slices = ndimage.find_objects(labels)
-        component_report_stride = max(100, int(np.ceil(len(candidate_labels) / 10)))
-        for component_number, label_index in enumerate(candidate_labels, start=1):
-            if progress is not None and component_number % component_report_stride == 0:
-                progress(
-                    f"  Plateau elevation {elevation_number}/{len(reducible_ranks)}: "
-                    f"{component_number:,}/{len(candidate_labels):,} plateaus..."
-                )
-            component_slice = component_slices[int(label_index) - 1]
+        for label_index in range(1, component_count + 1):
+            component_slice = component_slices[label_index - 1]
             if component_slice is None:
                 continue
             component = labels[component_slice] == label_index
             local_points = _component_boundary_vertices(component)
-            row_offset = component_slice[0].start
-            col_offset = component_slice[1].start
+            row_offset = int(component_slice[0].start)
+            col_offset = int(component_slice[1].start)
             grid_points = local_points + np.asarray((row_offset, col_offset))
 
             triangulation = Delaunay(grid_points[:, [1, 0]])
@@ -188,40 +165,259 @@ def _reduced_grid_surface_faces(
                 cell_rows[inside_indices],
                 cell_cols[inside_indices],
             ]
-            point_triangles = point_triangles[inside]
 
-            triangle_points = grid_points[point_triangles]
-            edge_1 = triangle_points[:, 1] - triangle_points[:, 0]
-            edge_2 = triangle_points[:, 2] - triangle_points[:, 0]
-            clockwise = edge_1[:, 1] * edge_2[:, 0] - edge_1[:, 0] * edge_2[:, 1] < 0
-            point_triangles[clockwise, 1:3] = point_triangles[clockwise, 2:0:-1]
-            reduced_cells[component_slice] |= component
-            reduced_face_chunks.append(
-                grid_points[point_triangles][..., 0] * cols + grid_points[point_triangles][..., 1]
+            for triangle in point_triangles[inside]:
+                vertices = [
+                    assembler.grid_vertex(
+                        int(grid_points[point_index, 0]),
+                        int(grid_points[point_index, 1]),
+                        float(height),
+                    )
+                    for point_index in triangle
+                ]
+                assembler.oriented_face(
+                    vertices[0],
+                    vertices[1],
+                    vertices[2],
+                    expected_normal=(0.0, 0.0, 1.0),
+                )
+
+
+def _grid_point_height_levels(heights: np.ndarray, floor_z: float) -> list[list[set[float]]]:
+    """Collect every incident elevation at each XY grid intersection."""
+    rows, cols = heights.shape
+    levels = [[{floor_z} for _ in range(cols + 1)] for _ in range(rows + 1)]
+    for row in range(rows):
+        for col in range(cols):
+            height = float(heights[row, col])
+            levels[row][col].add(height)
+            levels[row][col + 1].add(height)
+            levels[row + 1][col].add(height)
+            levels[row + 1][col + 1].add(height)
+    return levels
+
+
+def _repair_height_saddles(heights: np.ndarray) -> tuple[np.ndarray, int]:
+    """Remove diagonal-only layer contacts that cannot form a two-manifold solid."""
+    repaired: np.ndarray | None = None
+    repair_count = 0
+
+    def values() -> np.ndarray:
+        return repaired if repaired is not None else heights
+
+    def raise_bridge(
+        first: tuple[int, int],
+        second: tuple[int, int],
+        target_height: float,
+    ) -> bool:
+        nonlocal repaired, repair_count
+        current = values()
+        bridge = first if current[first] >= current[second] else second
+        if float(current[bridge]) >= target_height:
+            return False
+        if repaired is None:
+            repaired = heights.copy()
+        repaired[bridge] = target_height
+        repair_count += 1
+        return True
+
+    changed = True
+    pass_count = 0
+    while changed and pass_count < 8:
+        changed = False
+        pass_count += 1
+        for row in range(heights.shape[0] - 1):
+            for col in range(heights.shape[1] - 1):
+                current = values()
+                top_left = float(current[row, col])
+                top_right = float(current[row, col + 1])
+                bottom_left = float(current[row + 1, col])
+                bottom_right = float(current[row + 1, col + 1])
+
+                down_target = min(top_left, bottom_right)
+                if down_target > max(top_right, bottom_left):
+                    changed = (
+                        raise_bridge(
+                            (row, col + 1),
+                            (row + 1, col),
+                            down_target,
+                        )
+                        or changed
+                    )
+
+                current = values()
+                top_left = float(current[row, col])
+                top_right = float(current[row, col + 1])
+                bottom_left = float(current[row + 1, col])
+                bottom_right = float(current[row + 1, col + 1])
+                up_target = min(top_right, bottom_left)
+                if up_target > max(top_left, bottom_right):
+                    changed = (
+                        raise_bridge(
+                            (row, col),
+                            (row + 1, col + 1),
+                            up_target,
+                        )
+                        or changed
+                    )
+
+    return (repaired if repaired is not None else heights), repair_count
+
+
+def _add_vertical_wall(
+    assembler: _MeshAssembler,
+    start: tuple[int, int],
+    end: tuple[int, int],
+    lower_z: float,
+    upper_z: float,
+    point_levels: list[list[set[float]]],
+    expected_normal: tuple[float, float, float],
+) -> None:
+    """Triangulate a vertical wall while honoring all incident Z split points."""
+    if upper_z <= lower_z:
+        return
+    start_col, start_row = start
+    end_col, end_row = end
+    start_levels = sorted(
+        {lower_z, upper_z}
+        | {level for level in point_levels[start_row][start_col] if lower_z < level < upper_z}
+    )
+    end_levels = sorted(
+        {lower_z, upper_z}
+        | {level for level in point_levels[end_row][end_col] if lower_z < level < upper_z}
+    )
+    start_vertices = [assembler.grid_vertex(start_row, start_col, z) for z in start_levels]
+    end_vertices = [assembler.grid_vertex(end_row, end_col, z) for z in end_levels]
+
+    start_index = 0
+    end_index = 0
+    while start_index < len(start_levels) - 1 or end_index < len(end_levels) - 1:
+        next_start = (
+            start_levels[start_index + 1] if start_index < len(start_levels) - 1 else float("inf")
+        )
+        next_end = end_levels[end_index + 1] if end_index < len(end_levels) - 1 else float("inf")
+        if next_start == next_end:
+            assembler.oriented_face(
+                start_vertices[start_index],
+                end_vertices[end_index],
+                end_vertices[end_index + 1],
+                expected_normal,
             )
+            assembler.oriented_face(
+                start_vertices[start_index],
+                end_vertices[end_index + 1],
+                start_vertices[start_index + 1],
+                expected_normal,
+            )
+            start_index += 1
+            end_index += 1
+        elif next_start < next_end:
+            assembler.oriented_face(
+                start_vertices[start_index],
+                end_vertices[end_index],
+                start_vertices[start_index + 1],
+                expected_normal,
+            )
+            start_index += 1
+        else:
+            assembler.oriented_face(
+                start_vertices[start_index],
+                end_vertices[end_index],
+                end_vertices[end_index + 1],
+                expected_normal,
+            )
+            end_index += 1
 
-    regular_faces = _grid_surface_faces(rows, cols)
-    cell_count = (rows - 1) * (cols - 1)
-    regular_cells = ~reduced_cells.ravel()
-    face_chunks = [
-        regular_faces[:cell_count][regular_cells],
-        regular_faces[cell_count:][regular_cells],
-        *reduced_face_chunks,
+
+def _add_step_walls(
+    assembler: _MeshAssembler,
+    heights: np.ndarray,
+    floor_z: float,
+) -> None:
+    """Add exact vertical walls on outer and unequal-height pixel boundaries."""
+    rows, cols = heights.shape
+    point_levels = _grid_point_height_levels(heights, floor_z)
+    for row in range(rows):
+        for col in range(cols):
+            height = float(heights[row, col])
+            west = floor_z if col == 0 else float(heights[row, col - 1])
+            east = floor_z if col == cols - 1 else float(heights[row, col + 1])
+            south = floor_z if row == 0 else float(heights[row - 1, col])
+            north = floor_z if row == rows - 1 else float(heights[row + 1, col])
+            if height > west:
+                _add_vertical_wall(
+                    assembler,
+                    (col, row),
+                    (col, row + 1),
+                    west,
+                    height,
+                    point_levels,
+                    (-1.0, 0.0, 0.0),
+                )
+            if height > east:
+                _add_vertical_wall(
+                    assembler,
+                    (col + 1, row),
+                    (col + 1, row + 1),
+                    east,
+                    height,
+                    point_levels,
+                    (1.0, 0.0, 0.0),
+                )
+            if height > south:
+                _add_vertical_wall(
+                    assembler,
+                    (col, row),
+                    (col + 1, row),
+                    south,
+                    height,
+                    point_levels,
+                    (0.0, -1.0, 0.0),
+                )
+            if height > north:
+                _add_vertical_wall(
+                    assembler,
+                    (col, row + 1),
+                    (col + 1, row + 1),
+                    north,
+                    height,
+                    point_levels,
+                    (0.0, 1.0, 0.0),
+                )
+
+
+def _perimeter_grid_points(rows: int, cols: int) -> list[tuple[int, int]]:
+    """Return grid perimeter points in counter-clockwise XY order."""
+    points = [(0, col) for col in range(cols + 1)]
+    points.extend((row, cols) for row in range(1, rows + 1))
+    points.extend((rows, col) for col in range(cols - 1, -1, -1))
+    points.extend((row, 0) for row in range(rows - 1, 0, -1))
+    return points
+
+
+def _add_floor(
+    assembler: _MeshAssembler,
+    rows: int,
+    cols: int,
+    floor_z: float,
+    width_mm: float,
+    height_mm: float,
+) -> None:
+    perimeter = [
+        assembler.grid_vertex(row, col, floor_z) for row, col in _perimeter_grid_points(rows, cols)
     ]
-    return np.vstack(face_chunks).astype(np.int64, copy=False)
-
-
-def _perimeter_vertex_indices(rows: int, cols: int) -> np.ndarray:
-    """Return grid perimeter indices in counter-clockwise XY order."""
-    bottom = np.arange(cols, dtype=np.int64)
-    right = np.arange(1, rows, dtype=np.int64) * cols + (cols - 1)
-    top = (rows - 1) * cols + np.arange(cols - 2, -1, -1, dtype=np.int64)
-    left = np.arange(rows - 2, 0, -1, dtype=np.int64) * cols
-    return np.concatenate((bottom, right, top, left))
+    center = assembler.loose_vertex(width_mm / 2.0, height_mm / 2.0, floor_z)
+    for index, current in enumerate(perimeter):
+        assembler.oriented_face(
+            center,
+            perimeter[(index + 1) % len(perimeter)],
+            current,
+            expected_normal=(0.0, 0.0, -1.0),
+        )
 
 
 class WatertightMeshBuilder:
-    """Construct a two-manifold relief with a flat top for every source pixel."""
+    """Construct one exact, two-manifold stepped relief from a pixel heightmap."""
 
     def __init__(self, dimensions: PhysicalDimensions) -> None:
         self._dims = dimensions
@@ -233,72 +429,54 @@ class WatertightMeshBuilder:
     ) -> TriangleMesh:
         """Transform an image-shaped elevation grid into a printable solid.
 
-        Every source pixel receives a two-triangle horizontal plateau. Adjacent
-        plateaus are joined across a microscopic transition strip instead of a
-        zero-width T-junction, keeping the indexed surface strictly manifold.
+        Pixel tops remain horizontal and full-sized. Unequal neighboring pixels
+        meet at true vertical walls on their shared raster boundary.
         """
         if z_grid.ndim != 2:
             raise ValueError(f"z_grid must be a 2D array, got ndim={z_grid.ndim}")
         if z_grid.size == 0:
             raise ValueError("z_grid cannot be empty.")
 
-        corrected_grid = np.asarray(np.flipud(z_grid), dtype=np.float32)
+        heights = np.asarray(np.flipud(z_grid), dtype=np.float32)
         floor_z = self._dims.base_floor_z_mm
-        if not np.all(np.isfinite(corrected_grid)):
+        if not np.all(np.isfinite(heights)):
             raise ValueError("z_grid must contain only finite elevations.")
-        if np.any(corrected_grid <= floor_z):
+        if np.any(heights <= floor_z):
             raise ValueError("Every pixel elevation must be above the base floor.")
+        heights, saddle_repairs = _repair_height_saddles(heights)
 
-        pixel_rows, pixel_cols = corrected_grid.shape
+        rows, cols = heights.shape
         if progress is not None:
-            progress(f"Expanding {pixel_cols:,} x {pixel_rows:,} flat-pixel grid...")
-        x_coords = _flat_cell_samples(self._dims.width_mm, pixel_cols)
-        y_coords = _flat_cell_samples(self._dims.height_mm, pixel_rows)
-        expanded_heights = np.repeat(np.repeat(corrected_grid, 2, axis=0), 2, axis=1)
-        xx, yy = np.meshgrid(x_coords, y_coords)
-        top_vertices = np.column_stack(
-            (xx.ravel(), yy.ravel(), expanded_heights.ravel())
-        ).astype(np.float32)
+            progress(f"Building exact {cols:,} x {rows:,} stepped-pixel grid...")
+            if saddle_repairs:
+                progress(
+                    f"Resolved {saddle_repairs:,} diagonal corner "
+                    "contacts for manifold topology."
+                )
+        x_coords = np.linspace(0.0, self._dims.width_mm, cols + 1, dtype=np.float64)
+        y_coords = np.linspace(0.0, self._dims.height_mm, rows + 1, dtype=np.float64)
+        assembler = _MeshAssembler(x_coords, y_coords)
 
-        grid_rows, grid_cols = expanded_heights.shape
-        top_faces = _reduced_grid_surface_faces(expanded_heights, progress)
+        _add_top_surfaces(assembler, heights, progress)
         if progress is not None:
-            progress(f"Reduced top surface to {len(top_faces):,} triangles.")
-        perimeter_top = _perimeter_vertex_indices(grid_rows, grid_cols)
-
+            progress(f"Reduced top surface to {len(assembler.faces):,} triangles.")
+            progress("Building exact vertical step walls...")
+        _add_step_walls(assembler, heights, floor_z)
         if progress is not None:
-            progress("Building floor and perimeter shell...")
-        floor_start = len(top_vertices)
-        floor_indices = floor_start + np.arange(len(perimeter_top), dtype=np.int64)
-        floor_vertices = top_vertices[perimeter_top].copy()
-        floor_vertices[:, 2] = floor_z
-
-        next_top = np.roll(perimeter_top, -1)
-        next_floor = np.roll(floor_indices, -1)
-        skirt_faces = np.vstack(
-            (
-                np.column_stack((perimeter_top, floor_indices, next_top)),
-                np.column_stack((next_top, floor_indices, next_floor)),
-            )
+            progress("Building floor...")
+        _add_floor(
+            assembler,
+            rows,
+            cols,
+            floor_z,
+            self._dims.width_mm,
+            self._dims.height_mm,
         )
 
-        center_index = floor_start + len(floor_vertices)
-        center_vertex = np.asarray(
-            [[self._dims.width_mm / 2.0, self._dims.height_mm / 2.0, floor_z]],
-            dtype=np.float32,
-        )
-        bottom_faces = np.column_stack(
-            (
-                np.full(len(floor_indices), center_index, dtype=np.int64),
-                next_floor,
-                floor_indices,
-            )
-        )
-
-        vertices = np.vstack((top_vertices, floor_vertices, center_vertex))
-        faces = np.vstack((top_faces, skirt_faces, bottom_faces))
         if progress is not None:
             progress("Compacting unused vertices...")
+        vertices = np.asarray(assembler.vertices, dtype=np.float32)
+        faces = np.asarray(assembler.faces, dtype=np.int32)
         used_vertices, compact_faces = np.unique(faces, return_inverse=True)
         vertices = vertices[used_vertices]
         faces = compact_faces.reshape(faces.shape).astype(np.int32, copy=False)

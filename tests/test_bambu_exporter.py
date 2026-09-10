@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+from typing import TypeVar
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
@@ -15,6 +16,14 @@ from stratachrome.bambu_exporter import export_bambu_project
 from stratachrome.bambu_project import NS_3MF, NS_BAMBU, NS_PRODUCTION, NS_RELS
 from stratachrome.depth_mapper import SwapEvent
 from stratachrome.mesh_builder import TriangleMesh
+
+_T = TypeVar("_T")
+
+
+def _required(value: _T | None, description: str) -> _T:
+    if value is None:
+        raise AssertionError(f"Expected {description} to be present.")
+    return value
 
 
 class BambuExporterTests(unittest.TestCase):
@@ -63,20 +72,31 @@ class BambuExporterTests(unittest.TestCase):
                     self.assertNotIn("ns0:", relationships_xml)
                     relationships = ET.fromstring(relationships_xml)
                     for relationship in relationships:
-                        target = relationship.get("Target")
-                        self.assertIsNotNone(target)
+                        target = _required(
+                            relationship.get("Target"),
+                            "relationship target",
+                        )
                         self.assertIn(target.lstrip("/"), archive.namelist())
 
                 master = ET.fromstring(archive.read("3D/3dmodel.model"))
                 namespace = {"m": NS_3MF, "p": NS_PRODUCTION}
                 resources = master.findall("./m:resources/m:object", namespace)
                 self.assertEqual([item.get("id") for item in resources], ["2"])
-                build_item = master.find("./m:build/m:item", namespace)
-                self.assertIsNotNone(build_item)
+                build_item = _required(
+                    master.find("./m:build/m:item", namespace),
+                    "master build item",
+                )
                 self.assertEqual(build_item.get("objectid"), "2")
-                transform = [float(value) for value in build_item.get("transform").split()]
+                transform_value = _required(
+                    build_item.get("transform"),
+                    "master build transform",
+                )
+                transform = [float(value) for value in transform_value.split()]
                 self.assertEqual(transform[9:11], [128.0, 128.0])
-                component = master.find(".//m:component", namespace)
+                component = _required(
+                    master.find(".//m:component", namespace),
+                    "master component",
+                )
                 self.assertEqual(component.get("objectid"), "1")
                 self.assertEqual(
                     component.get(f"{{{NS_PRODUCTION}}}path"), "/3D/Objects/object_1.model"
@@ -87,8 +107,10 @@ class BambuExporterTests(unittest.TestCase):
                 )
 
                 object_model = ET.fromstring(archive.read("3D/Objects/object_1.model"))
-                object_build = object_model.find("./m:build", namespace)
-                self.assertIsNotNone(object_build)
+                object_build = _required(
+                    object_model.find("./m:build", namespace),
+                    "object build",
+                )
                 self.assertEqual(len(object_build), 0)
 
                 settings = json.loads(archive.read("Metadata/project_settings.config"))
@@ -119,7 +141,10 @@ class BambuExporterTests(unittest.TestCase):
                 )
 
                 model_settings = ET.fromstring(archive.read("Metadata/model_settings.config"))
-                extruder = model_settings.find("./object/metadata[@key='extruder']")
+                extruder = _required(
+                    model_settings.find("./object/metadata[@key='extruder']"),
+                    "extruder metadata",
+                )
                 self.assertEqual(extruder.get("value"), "1")
 
     def test_first_color_is_model_color_and_later_transitions_are_events(self) -> None:

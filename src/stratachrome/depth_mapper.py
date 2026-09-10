@@ -261,7 +261,7 @@ def _extract_tier_swaps(
                     filament_hex=fil.hex,
                     tier_name=tier_name,
                     filament_type=fil.type,
-                    filament_finish=fil.finish,
+                    filament_finish=fil.finish or "",
                     filament_id=fil.id,
                 )
             )
